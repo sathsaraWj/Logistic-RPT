@@ -74,6 +74,14 @@ disallow_untyped_defs = true
 module = "apps.*"
 disallow_untyped_defs = false
 
+# Heavy ML libraries (Phase 10+, `ml` dependency group) either ship no type stubs at all
+# (mlflow) or stubs too incomplete to satisfy strict mode (sklearn, torch) — ignored here rather
+# than per-import, consistent with how this project treats any third-party dependency with no
+# usable stubs.
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "mlflow.*", "torch.*", "scipy.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"

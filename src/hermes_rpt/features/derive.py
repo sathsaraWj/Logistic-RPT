@@ -6,12 +6,28 @@ arbitrary code from a feature spec.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 
 class UnknownDeriveFunctionError(Exception):
     pass
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    """Postgres/asyncpg always returns a real, timezone-aware `datetime` for a timestamp
+    column; this exists only for portability with drivers (e.g. sqlite3, used in tests) that
+    round-trip a TEXT-affinity column as a naive ISO string instead — the platform's datetimes
+    are always UTC (hermes_rpt.ontology.values.CanonicalDatetime), so a naive value here is
+    assumed to already be UTC. Mirrors the identical fallback in
+    hermes_rpt.features.compiler.compile_and_run_related_feature."""
+
+    if value is None:
+        return None
+    parsed: datetime = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def hour_of_day(value: datetime, **_: Any) -> int | None:
@@ -61,4 +77,8 @@ def apply_derive(
         fn = _REGISTRY[name]
     except KeyError as exc:
         raise UnknownDeriveFunctionError(f"Unknown derive function: {name!r}") from exc
-    return fn(value, secondary=secondary, prediction_time=prediction_time)
+    return fn(
+        _coerce_datetime(value),
+        secondary=_coerce_datetime(secondary),
+        prediction_time=prediction_time,
+    )

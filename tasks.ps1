@@ -36,5 +36,9 @@ switch ($Task) {
     "migrate"     { uv run alembic upgrade head }
     "run-api"     { uv run uvicorn apps.api.main:app --reload }
     "run-worker"  { uv run python -m apps.worker.main }
+    "build-synthetic-dataset" { uv run python scripts/build_synthetic_dataset.py }
+    "train-baselines"  { uv run python -m apps.trainer.main baselines }
+    "train-hermes-rpt" { uv run python -m apps.trainer.main hermes-rpt }
+    "pretrain-hermes-rpt" { uv run python -m apps.trainer.main pretrain }
     default       { throw "Unknown task '$Task'. See tasks.ps1 for the list." }
 }

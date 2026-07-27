@@ -8,6 +8,7 @@ from __future__ import annotations
 
 _MAX_HISTORICAL_WINDOW_DAYS = 365
 _MAX_RELATED_ROW_LIMIT = 500
+_MAX_DATASET_BUILD_ROW_LIMIT = 50_000
 
 
 class QueryCostExceededError(Exception):
@@ -28,3 +29,12 @@ def related_row_limit() -> int:
     extraction" holds even if a feature's window is large or a related table is huge."""
 
     return _MAX_RELATED_ROW_LIMIT
+
+
+def dataset_build_row_limit() -> int:
+    """A hard cap on how many target-entity rows a single dataset build enumerates
+    (`hermes_rpt.features.compiler.fetch_rows_in_range`, `hermes_rpt.datasets.builder`) —
+    same "reject unbounded extraction" principle applied to offline dataset building rather
+    than a single online extraction."""
+
+    return _MAX_DATASET_BUILD_ROW_LIMIT

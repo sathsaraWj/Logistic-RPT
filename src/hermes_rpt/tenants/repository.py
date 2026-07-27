@@ -8,7 +8,7 @@ from sqlalchemy import and_, select
 
 from hermes_rpt.common.repository import BaseRepository, TenantScopedRepository
 from hermes_rpt.tenants.context import TenantContext
-from hermes_rpt.tenants.enums import RoleName
+from hermes_rpt.tenants.enums import ConsentStatus, RoleName
 from hermes_rpt.tenants.models import (
     DataAccessPolicy,
     DataUsageConsent,
@@ -65,3 +65,19 @@ class DataAccessPolicyRepository(TenantScopedRepository[DataAccessPolicy]):
 
 class DataUsageConsentRepository(TenantScopedRepository[DataUsageConsent]):
     model = DataUsageConsent
+
+    async def has_granted_consent(self, tenant_id: uuid.UUID, *, consent_type: str) -> bool:
+        """Deliberately not scoped by a caller's own `TenantContext` — checking *another*
+        tenant's consent record is exactly what a shared-pretraining consent gate
+        (`hermes_rpt.models.transformer.pretraining_consent`) needs to do, one contributing
+        tenant at a time."""
+
+        stmt = select(DataUsageConsent).where(
+            and_(
+                DataUsageConsent.tenant_id == tenant_id,
+                DataUsageConsent.consent_type == consent_type,
+                DataUsageConsent.status == ConsentStatus.GRANTED,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none() is not None

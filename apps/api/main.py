@@ -15,7 +15,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from apps.api.exception_handlers import register_exception_handlers
-from apps.api.routers import connections, mappings, memberships, schema_discovery
+from apps.api.routers import (
+    connections,
+    features,
+    mappings,
+    memberships,
+    predictions,
+    schema_discovery,
+)
 from hermes_rpt import __version__
 from hermes_rpt.common.correlation import CorrelationIdMiddleware
 from hermes_rpt.common.db import get_sessionmaker
@@ -69,6 +76,8 @@ def create_app() -> FastAPI:
     app.include_router(connections.router)
     app.include_router(schema_discovery.router)
     app.include_router(mappings.router)
+    app.include_router(features.router)
+    app.include_router(predictions.router)
 
     @app.get("/health/live", tags=["health"])
     async def health_live() -> dict[str, str]:

@@ -1,5 +1,6 @@
 .PHONY: install lint format typecheck test test-unit test-integration security-check \
-        docs-check ci up down logs migrate run-api run-worker clean
+        docs-check ci up down logs migrate run-api run-worker clean build-synthetic-dataset \
+        train-baselines train-hermes-rpt pretrain-hermes-rpt
 
 UV ?= uv
 
@@ -63,3 +64,15 @@ run-worker:
 
 clean:
 	$(UV) run python -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('.pytest_cache', '.mypy_cache', '.ruff_cache')]"
+
+build-synthetic-dataset: ## Generate synthetic Alpha/Beta fleet data and build a sample dataset + quality report.
+	$(UV) run python scripts/build_synthetic_dataset.py
+
+train-baselines: ## Train all three baseline models on a synthetic dataset; requires `make install-ml`.
+	$(UV) run python -m apps.trainer.main baselines
+
+train-hermes-rpt: ## Train baselines + Hermes-RPT-0.1 (Tiny) and compare; requires `make install-ml`.
+	$(UV) run python -m apps.trainer.main hermes-rpt
+
+pretrain-hermes-rpt: ## Pretrain + fine-tune Hermes-RPT-0.1 (Tiny) vs. scratch, plus baselines; requires `make install-ml`.
+	$(UV) run python -m apps.trainer.main pretrain

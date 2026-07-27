@@ -264,50 +264,234 @@ Phase 1.
 
 ## Phase 8 — Safe feature extraction
 
-- [ ] `PredictionTaskRegistry` with delivery-delay-risk task
-- [ ] Explicit feature contract with leakage-risk/availability-timestamp metadata per feature
-- [ ] Tenant-aware extraction planner, mapping resolver, safe query compiler/validator,
-      query-cost guard, normaliser, lineage record, batch format
-- [ ] Point-in-time correctness tests; dry-run mode; Alpha/Beta integration tests
+- [x] `PredictionTaskRegistry`-equivalent with the delivery-delay-risk task:
+      `hermes_rpt.features.contract.DELIVERY_DELAY_RISK_CONTRACT` (14 features, target entity
+      `Trip`), keyed by `task_key` in `apps/api/routers/features.py`'s `_CONTRACTS` dict for
+      future tasks to register into.
+- [x] Explicit feature contract with leakage-risk/availability-timestamp metadata per feature:
+      `hermes_rpt.features.contract.FeatureSpec` (`leakage_risk`, `leakage_note`,
+      `availability_timestamp`, `historical_window_days`, `missing_value_behavior`,
+      `required`). Two features (`driver_late_delivery_ratio`, `planned_delivery_count`) are
+      documented single-hop proxies for what would naturally need a multi-hop join — see
+      docs/FEATURE_EXTRACTION.md §2.
+- [x] Tenant-aware extraction planner (`hermes_rpt.features.planner.build_query_plan`, dry-run,
+      never opens a connection), mapping resolver (`hermes_rpt.features.resolver.
+      MappingResolver` — fails closed for the target entity, returns `None` for an unmapped
+      related entity rather than raising), safe query compiler
+      (`hermes_rpt.features.compiler` — parameterized SQLAlchemy Core only, allowlist-checked
+      via `hermes_rpt.connectors.query_guard`, one fixed recipe per `FeatureKind`), query-cost
+      guard (`hermes_rpt.features.cost_guard` — 365-day window cap, 500-row related-query cap),
+      normaliser (`hermes_rpt.features.normalizer` — `data_type` coercion +
+      `missing_value_behavior`), lineage record (`hermes_rpt.features.lineage.
+      FeatureLineageRecord` — tenant, task key, contract version, target/related mapping
+      *version* ids, schema snapshot id, missing-feature reasons), batch format
+      (`hermes_rpt.features.lineage.FeatureBatch`). Orchestrated by
+      `hermes_rpt.features.service.FeatureExtractionService` (`plan()` / `extract()`).
+- [x] Point-in-time correctness tests (`tests/unit/test_feature_compiler.py`,
+      `test_feature_derive.py` — every `FeatureKind`'s `< prediction_time` cutoff and window
+      lower bound, plus `loading_start_delay_minutes`'s independent zero-if-future guard);
+      dry-run mode (`test_dry_run_plan_never_touches_the_database`); Alpha/Beta integration
+      tests (`tests/security/test_feature_extraction_service.py` — full pipeline against two
+      differently-named synthetic schemas via `tests.fakes.SQLiteConnector`, plus missing-related-
+      mapping-is-not-an-error and fail-closed-on-missing-target-mapping cases). 39 new tests.
+- [x] `GET /v1/features/{task_key}/plan` and `POST /v1/features/{task_key}/extract`
+      (`apps/api/routers/features.py`, behind `prediction:execute`) — the extraction layer is
+      independently reachable/auditable; the real prediction-serving endpoint is Phase 13.
+- [x] `docs/FEATURE_EXTRACTION.md`
+
+Follow-up / known gaps (see docs/FEATURE_EXTRACTION.md §8): no multi-hop join support yet;
+window/row-limit constants are platform-wide, not per-tenant configurable; no real-Postgres
+integration test for this phase specifically (Docker unavailable in this environment — same
+skip-gated pattern as earlier phases; the SQLite end-to-end tests exercise the full pipeline's
+logic, just not the Postgres driver).
 
 ## Phase 9 — Dataset building and data quality
 
-- [ ] Dataset definition/build job/manifest/checksum/lineage; temporal train/val/test splits
-- [ ] Data-quality report, feature/label statistics, leakage checks
-- [ ] Synthetic Alpha/Beta generators (different schemas, missing values, imbalance, drift,
-      delays, histories); `make build-synthetic-dataset`
-- [ ] Quality checks: duplicate IDs, invalid dates, negative distances, impossible fuel
-      quantities, unrecognised statuses, missing labels, imbalance, future timestamps,
-      cross-tenant contamination
+- [x] Dataset definition (`hermes_rpt.datasets.definition.DatasetDefinition` — task, tenant
+      (or explicit shared-research-dataset flag), time range, `LabelDefinition`,
+      `TemporalSplitStrategy`), build job (`hermes_rpt.datasets.builder.DatasetBuildService`),
+      manifest (`hermes_rpt.datasets.manifest.DatasetManifest` — metadata/counts/checksum only,
+      no raw values), checksum (`compute_dataset_checksum`, deterministic SHA-256 over feature
+      values + labels in row order — reproducibility verified by test), lineage
+      (`DatasetLineage` — ontology version, feature-contract version, and the exact
+      `MappingVersion`/`SchemaSnapshot` ids used, not just "current"); temporal train/val/test
+      splits (`hermes_rpt.datasets.split.split_temporally` — no shuffling, cut by fraction on
+      already-time-ordered rows).
+- [x] Data-quality report (`hermes_rpt.datasets.quality.DataQualityReport`), feature/label
+      statistics (`hermes_rpt.datasets.statistics` — mean/std/min/max, missing counts, class
+      balance), leakage checks (point-in-time validation at the label level — see
+      docs/DATASET_BUILDING.md §2 — layered on top of Phase 8's feature-level `< prediction_time`
+      cutoffs; a row with a self-contradictory timestamp is excluded, not trusted, and never
+      crashes the build).
+- [x] Synthetic Alpha/Beta generators (`hermes_rpt.synthetic` — deterministic/seeded, all seven
+      entities the delivery-delay-risk contract touches, two differently-named table/column
+      schemas per docs/DATASET_BUILDING.md §6, realistic missing values, class imbalance
+      (~85-90% on-time), vehicle/route histories, trips near the time-range boundary deliberately
+      left unresolved ("avoid placing future events into earlier training rows")); a small fixed
+      set of deliberately injected defects (`_inject_defects`) for the quality checks to catch;
+      `make build-synthetic-dataset` / `.\tasks.ps1 build-synthetic-dataset`
+      (`scripts/build_synthetic_dataset.py`) — run and produced a real sample report (see
+      docs/DATASET_BUILDING.md §7).
+- [x] Quality checks: duplicate IDs, invalid dates, negative distances, unrecognised statuses,
+      missing labels, severe class imbalance, future timestamps, cross-tenant contamination —
+      all implemented in `hermes_rpt.datasets.quality` and exercised against real injected
+      defects in both the unit suite and the Alpha/Beta end-to-end integration test. "Impossible
+      fuel quantities" is generated by the synthetic data (a negative `quantity_litres` on a
+      `FuelEvent` row) but not yet checked directly, since `FuelEvent` is a related entity, not
+      the target entity these checks currently run against — see follow-up below.
+- [x] `docs/DATASET_BUILDING.md`
+
+Follow-up / known gaps (see docs/DATASET_BUILDING.md §8): quality checks are reporting-only —
+an `error`-severity finding does not itself drop rows from the built dataset (label-level and
+point-in-time issues are the exception — those rows are excluded); checks only run against the
+target entity's (`Trip`) raw rows, not related entities, so "impossible fuel quantities" isn't
+directly checked yet; `DatasetManifest` is a file artifact, not a queryable control-plane table;
+no real-Postgres integration test for this phase (Docker unavailable in this environment, same
+as Phase 8 — SQLite end-to-end tests cover the pipeline's logic).
 
 ## Phase 10 — Baseline models
 
-- [ ] Logistic regression, gradient-boosted trees, small MLP behind a common interface
-- [ ] MLflow tracking, artifact registration, model signature, evaluation report
-- [ ] Metrics: ROC-AUC, PR-AUC, precision/recall/F1, Brier score, calibration, confusion matrix
-- [ ] Registry stages: Candidate/Staging/Production/Archived; no auto-promotion
-- [ ] Reproducibility, serialization, schema-validation, missing-feature, registry, and tenant
-      model-access isolation tests
-- [ ] Baseline comparison report
+- [x] Logistic regression, gradient-boosted trees, small MLP behind a common interface
+      (`hermes_rpt.models.interface.BaselineModel`, implemented by
+      `hermes_rpt.models.baselines` — all scikit-learn, not torch, so this tier stays
+      independent of Phase 11's transformer stack). `HistGradientBoostingClassifier` chosen for
+      the GBT baseline specifically for native `NaN` support (see docs/BASELINE_MODELS.md §2 —
+      matters because Phase 8/9 features are legitimately missing per tenant by design).
+      Training configuration + reproducible seeds: `hermes_rpt.models.config.TrainingConfig`.
+- [x] MLflow tracking (params/metrics/tags — tenant id, dataset checksum, mapping version ids,
+      code revision, feature-contract/ontology versions), artifact registration + model
+      signature (`mlflow.sklearn.log_model`, with an explicit narrow `skops_trusted_types`
+      allowlist rather than falling back to less-safe pickle serialization — see
+      docs/BASELINE_MODELS.md §5), evaluation report (`hermes_rpt.models.comparison`'s markdown
+      table). Tracking store is SQLite (`sqlite:///mlflow.db`), matching
+      docker-compose.yml's MLflow service — MLflow's filesystem backend is in maintenance mode
+      as of 3.x and refuses to initialize without an explicit opt-out.
+- [x] Metrics: ROC-AUC, PR-AUC, precision/recall/F1, Brier score, calibration (10-bin curve),
+      confusion matrix at a selected threshold (`hermes_rpt.models.metrics`) — accuracy is
+      deliberately never computed. Threshold selection
+      (`select_threshold`, default `max_f1` on the *validation* split, never test).
+- [x] Registry stages: Candidate/Staging/Production/Archived
+      (`hermes_rpt.registry.service.ModelRegistryService` — `register_candidate` always forces
+      `CANDIDATE` regardless of caller input; `transition_stage` enforces a fixed transition
+      graph, `ARCHIVED` terminal; every transition audited). No auto-promotion.
+- [x] Reproducibility (same seed + data -> identical predictions, per baseline), serialization
+      (MLflow-stored artifact round-trips via `mlflow.sklearn.load_model` and predicts
+      identically), schema-validation (mismatched feature count raises, scikit-learn's own
+      guarantee, exercised as a platform contract), missing-feature (GBT native `NaN`; LR/MLP
+      imputation — both exercised with real gaps), registry (metadata round-trip, valid/invalid
+      stage transitions), and tenant model-access isolation tests (shared-vs-private
+      `ModelVersion` visibility, `TenantModelAdapter` strict tenant scoping) — all in
+      `tests/model/` (`test_baselines_and_metrics.py`, `test_registry.py`,
+      `test_training_service.py`), gated behind `uv sync --group ml` per `make test-model`.
+- [x] Baseline comparison report (`hermes_rpt.models.comparison.build_comparison_report` — picks
+      the highest-PR-AUC baseline, not ROC-AUC or accuracy, given class imbalance) — produced end
+      to end via `make train-baselines` / `.\tasks.ps1 train-baselines`
+      (`apps/trainer/main.py`'s `baselines` command, reusing Phase 9's synthetic-tenant
+      provisioning via the newly-extracted `scripts.build_synthetic_dataset.
+      provision_and_build_dataset`).
+- [x] `docs/BASELINE_MODELS.md`
+
+Follow-up / known gaps (see docs/BASELINE_MODELS.md §10): the synthetic generator's delay
+outcome is only weakly correlated with the feature set, so a demo comparison report's ROC-AUC
+hovering near 0.5 is expected — Phase 9's synthetic data optimizes for realistic
+missingness/imbalance/history, not for this baseline's predictive strength; gradient-boosted
+trees has no feature-importance signal through this interface (permutation importance would need
+held-out data the interface doesn't pass through); the trainer CLI always builds a fresh
+synthetic dataset rather than accepting an existing one.
 
 ## Phase 11 — Hermes-RPT v0.1 (Tiny)
 
-- [ ] Encoders (numeric/categorical/timestamp), entity/table/column embeddings, missing-value
-      embeddings, record encoder, relationship embeddings, transformer blocks, attention
-      masks, target pooling, classification head
-- [ ] Explicit relationship representation; capped, variable-size relational context; masks
-      over fake values
-- [ ] Shape/masking tests, tiny-overfit test, numerical-stability checks, checkpoint tests
-- [ ] Comparison against strongest baseline; honest reporting
-- [ ] Tiny/Small/Base-experimental configs defined; only Tiny trained
-- [ ] `docs/HERMES_RPT_0_1.md`
+- [x] Encoders (numeric/categorical/timestamp), entity/table/column embeddings, missing-value
+      embeddings, record encoder, relationship embeddings, transformer blocks, attention masks,
+      target pooling, classification head — all real, separate modules under
+      `hermes_rpt.models.transformer` (`modules.py`, `model.py`); see docs/HERMES_RPT_0_1.md §1
+      for the component-to-module mapping. New `hermes_rpt.features.compiler.
+      fetch_related_records` reuses Phase 8's exact allowlist/point-in-time-cutoff safety
+      machinery to fetch raw per-record relational context (not Phase 8's aggregated scalar
+      features), via `hermes_rpt.models.transformer.context.RelationalContextBuilder`.
+- [x] Explicit relationship representation (six named relationships — `uses_vehicle`,
+      `assigned_driver_history`, `follows_route_history`, `has_deliveries`,
+      `has_maintenance_events`, `has_fuel_events` — docs/HERMES_RPT_0_1.md §3); capped
+      (`max_records_per_relation`, enforced once at the query layer via `LIMIT`), variable-size
+      relational context (`attention_mask` tracks how many of each relation's fixed `K` slots
+      hold a real record); masks over fake values (every field-kind encoder substitutes a
+      learned missing-value embedding, never a bare `0.0`, for an absent field — categorical's
+      missing embedding is embedding index 0 by construction). Tenant isolation (never combine
+      contexts across tenants; no `tenant_id` field) is structural, verified directly by test.
+- [x] Shape/masking tests (`test_transformer_shapes.py` — every documented tensor shape, target
+      always at position 0, missing-field masking, per-relation truncation at the cap, a
+      dedicated test proving extra padding doesn't change the target's pooled output),
+      tiny-overfit test (`test_transformer_overfit.py` — Tiny memorizes 16 synthetic examples,
+      documented as a wiring check, not a capability claim), numerical-stability checks (finite
+      logits/loss/gradients after a real forward+backward pass), checkpoint tests
+      (`test_transformer_checkpoint.py` — save/reload round-trips to bit-identical predictions).
+      39 new tests across `tests/model/test_transformer_*.py`.
+- [x] Comparison against strongest baseline (`apps/trainer/main.py`'s new `hermes-rpt` command
+      trains all three Phase 10 baselines *and* Hermes-RPT-0.1 Tiny on the identical
+      provisioned dataset/split, then folds every result into the same
+      `hermes_rpt.models.comparison.build_comparison_report` table); honest reporting — the CLI
+      output and docs/HERMES_RPT_0_1.md §8 both explicitly warn against reading a win as evidence
+      of production-readiness, since the synthetic labels are only weakly correlated with the
+      available features for baselines and transformer alike (see docs/BASELINE_MODELS.md §10).
+- [x] Tiny/Small/Base-experimental configs defined (`hermes_rpt.models.transformer.model`); only
+      Tiny trained — Small/Base-experimental are construction-and-forward-pass tested only.
+- [x] `docs/HERMES_RPT_0_1.md`
+
+Follow-up / known gaps (see docs/HERMES_RPT_0_1.md §10): the model's own checkpoint format uses
+`torch.load(weights_only=False)` (needed since it stores a plain config dataclass alongside
+weights) and must only ever be loaded from checkpoints this platform itself wrote — no
+skops-style trusted-types guard exists for it yet, unlike Phase 10's baselines; no
+feature-importance/explainability equivalent for the transformer in this phase; `apps/trainer/
+main.py`'s `hermes-rpt` command always provisions a fresh synthetic Tenant-Alpha dataset rather
+than accepting an existing one, same limitation as Phase 10's `baselines` command.
 
 ## Phase 12 — Relational pretraining
 
-- [ ] Configurable self-supervised objectives per prompts.txt
-- [ ] Tenant-boundary-preserving, relation-structure-preserving collator
-- [ ] Multi-task loss; memorisation-risk canary tests; pretraining lineage
-- [ ] Pretrained vs. non-pretrained Tiny comparison; honest experimental report
+- [x] Configurable self-supervised objectives (`hermes_rpt.models.transformer.pretraining`):
+      masked cell reconstruction (covers masked categorical-value prediction + numeric-value
+      reconstruction), relationship-link prediction (covers foreign-key target prediction),
+      temporal-order prediction. Table/column semantic alignment and record-context matching
+      explicitly not implemented — documented scope decisions, not silent gaps (see
+      docs/HERMES_RPT_PRETRAINING.md §1). "Avoid objectives that expose direct identifiers
+      unnecessarily": `protected_field_names` reads `OntologyFieldDefinition.
+      is_business_identifier` (Phase 6) directly, so a business identifier is never a
+      reconstruction target — verified across 30 seeds at `mask_probability=1.0`.
+- [x] Tenant-boundary-preserving, relation-structure-preserving collator
+      (`build_pretraining_batch`) — operates entirely within one already-tenant-scoped
+      `EncodedBatch`; a corrupted link keeps its claimed relationship/entity-type embedding
+      (only content is swapped), which is what makes the corruption detectable at all; tracks
+      which values are labels via explicit per-cell/per-position target tensors; supports
+      variable relational contexts by reusing Phase 11's padded layout unchanged.
+- [x] Multi-task loss with configurable weights (`hermes_rpt.models.transformer.
+      pretraining_model.LossWeights`/`compute_pretraining_loss`) — includes a real regression
+      fix caught during development (unnormalized numeric-field MSE, e.g. `manufacture_year`
+      ~2020, produced billions-scale loss dominating every other objective; fixed via per-slot
+      magnitude scaling, covered by a dedicated regression test). Memorisation-risk canary
+      tests (`tests/model/test_pretraining_masking.py` — protected-field exclusion using
+      literal canary-shaped values; `tests/model/test_pretraining_end_to_end.py::
+      test_finetuning_inference_output_never_exposes_more_than_a_risk_score` — structural proof
+      the serving model's only output is one scalar per example, no reconstruction head
+      reachable from inference). Pretraining lineage (tenant id, dataset checksum/id, code
+      revision, ontology version, active objectives/weights — same tags every other training
+      path logs).
+- [x] Pretrained vs. non-pretrained Tiny comparison (`apps/trainer/main.py`'s new `pretrain`
+      command — pretrains a backbone, fine-tunes both a pretrained and a from-scratch Tiny on
+      identical data/config, folds baselines + both variants into one comparison report);
+      honest experimental report (docs/HERMES_RPT_PRETRAINING.md §10 — explicit about the
+      synthetic dataset's known-weak label correlation meaning this is a pipeline-correctness
+      demonstration, not evidence of generalizable pretraining benefit).
+- [x] Shared-pretraining consent gate (`hermes_rpt.models.transformer.pretraining_consent` —
+      "shared pretraining requires an explicit approved dataset class and consent record," a
+      hard stop against `hermes_rpt.tenants.models.DataUsageConsent`, a Phase 2 table whose
+      docstring already anticipated this exact use); tenant-isolated by default (every actual
+      pretraining call in this phase runs against exactly one tenant).
+- [x] Reproducibility checks (`test_pretraining_is_reproducible_given_the_same_seed` — bit-
+      identical backbone weights and loss curves for the same seed) and ablation configuration
+      (any `LossWeights` with every objective but one at `0.0`; exercised both in isolated loss
+      tests and through a full `pretrain()` run).
+- [x] `docs/HERMES_RPT_PRETRAINING.md`
+
+21 new tests across `tests/model/test_pretraining_*.py`.
 
 ## Phase 13 — Inference API
 

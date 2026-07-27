@@ -185,12 +185,18 @@ class FeatureExtractionService:
                 schema_allowlist=related_connection.schema_allowlist,
                 table_allowlist=related_connection.table_allowlist,
             )
+            if feature.derive is not None:
+                # RELATED_LATEST_VALUE features may need a post-fetch transform (e.g.
+                # vehicle_age_years: fetch Vehicle.acquired_at, then derive an age in years) —
+                # the same fixed derive registry DERIVED_FROM_TARGET uses, just applied after
+                # the related-entity query instead of the target row lookup.
+                raw = apply_derive(feature.derive, raw, prediction_time=prediction_time)
             features_out[feature.name] = normalize(feature, raw)
             if raw is None and feature.required:
                 missing.append(MissingFeatureReason(feature_name=feature.name, reason="No value"))
 
-        # nosec B101 - resolve_target() only ever returns a mapping with active_version_id set
-        assert target.schema_mapping.active_version_id is not None
+        # resolve_target() only ever returns a mapping with active_version_id set
+        assert target.schema_mapping.active_version_id is not None  # nosec B101
         lineage = FeatureLineageRecord(
             tenant_id=tenant_context.tenant_id,
             task_key=contract.task_key,

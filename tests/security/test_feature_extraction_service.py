@@ -109,6 +109,10 @@ def _trip_document(*, table: str, vehicle_id_column: str) -> MappingDocument:
             "planned_distance_km": FieldMapping(
                 sources=(ValueSource(column="planned_distance_km"),)
             ),
+            # Required by the ontology but irrelevant to the features under test here — mapped
+            # via a static value purely to satisfy MappingService.submit_for_validation's
+            # required-field check.
+            "status": FieldMapping(sources=(ValueSource(static="completed"),)),
         },
     )
 
@@ -118,7 +122,11 @@ def _vehicle_document(*, table: str, id_column: str, acquired_column: str) -> Ma
         entity="Vehicle",
         source=SourceTable(schema="main", table=table),
         identity={"vehicle_id": FieldMapping(sources=(ValueSource(column=id_column),))},
-        fields={"acquired_at": FieldMapping(sources=(ValueSource(column=acquired_column),))},
+        fields={
+            "acquired_at": FieldMapping(sources=(ValueSource(column=acquired_column),)),
+            "registration_number": FieldMapping(sources=(ValueSource(static="REG-STATIC"),)),
+            "is_active": FieldMapping(sources=(ValueSource(static=True),)),
+        },
     )
 
 
@@ -221,13 +229,18 @@ async def test_extraction_end_to_end_for_beta_schema(session: AsyncSession) -> N
             "vehicle_id": FieldMapping(sources=(ValueSource(column="asset_ref"),)),
             "planned_departure_at": FieldMapping(sources=(ValueSource(column="depart_at"),)),
             "planned_distance_km": FieldMapping(sources=(ValueSource(column="distance_km"),)),
+            "status": FieldMapping(sources=(ValueSource(static="completed"),)),
         },
     )
     vehicle_document = MappingDocument(
         entity="Vehicle",
         source=SourceTable(schema="main", table="assets"),
         identity={"vehicle_id": FieldMapping(sources=(ValueSource(column="asset_ref"),))},
-        fields={"acquired_at": FieldMapping(sources=(ValueSource(column="in_service_since"),))},
+        fields={
+            "acquired_at": FieldMapping(sources=(ValueSource(column="in_service_since"),)),
+            "registration_number": FieldMapping(sources=(ValueSource(static="REG-STATIC"),)),
+            "is_active": FieldMapping(sources=(ValueSource(static=True),)),
+        },
     )
     await _register_and_activate(
         session,
@@ -306,8 +319,13 @@ async def test_missing_related_mapping_marks_features_missing_not_an_error(
     assert batch.features["vehicle_age_years"] is None  # missing — no Vehicle mapping
     assert batch.features["odometer_km"] is None
     missing_names = {m.feature_name for m in batch.lineage.missing_features}
-    assert "vehicle_age_years" not in missing_names  # not required, so not flagged as missing
-    assert batch.lineage.related_mapping_version_ids == {}
+    # Every related-entity feature is recorded as missing (regardless of `required`) since its
+    # entity has no active mapping at all — "do not assume all customers have every feature."
+    assert "vehicle_age_years" in missing_names
+    assert "odometer_km" in missing_names
+    # Trip itself resolves (it's the target, and some features self-join Trip -> Trip), but no
+    # *other* entity does, since only Trip has an active mapping in this tenant.
+    assert set(batch.lineage.related_mapping_version_ids) == {"Trip"}
 
     await engine.dispose()
 

@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 from hermes_rpt.common.repository import BaseRepository, TenantMismatchError, TenantScopedRepository
+from hermes_rpt.registry.enums import ModelStage
 from hermes_rpt.registry.models import ModelVersion, TenantModelAdapter
 from hermes_rpt.tenants.context import TenantContext
 
@@ -60,6 +61,32 @@ class ModelVersionRepository(BaseRepository[ModelVersion]):
                 f"{tenant_context.tenant_id}"
             )
         return model_version
+
+    async def get_production_model(
+        self, task_definition_id: uuid.UUID, *, tenant_context: TenantContext
+    ) -> ModelVersion | None:
+        """The model an inference request actually serves: `PRODUCTION`-staged, and either
+        private to this tenant or shared — a tenant-private `PRODUCTION` model always wins over
+        a shared one for the same task, mirroring "Shared Hermes-RPT base + tenant-specific
+        private adapter" (Phase 14) being the more specific choice."""
+
+        stmt = select(ModelVersion).where(
+            and_(
+                ModelVersion.task_definition_id == task_definition_id,
+                ModelVersion.stage == ModelStage.PRODUCTION,
+                ModelVersion.is_active.is_(True),
+                or_(
+                    ModelVersion.tenant_id.is_(None),
+                    ModelVersion.tenant_id == tenant_context.tenant_id,
+                ),
+            )
+        )
+        result = await self.session.execute(stmt)
+        candidates = list(result.scalars().all())
+        tenant_private = [m for m in candidates if m.tenant_id == tenant_context.tenant_id]
+        if tenant_private:
+            return tenant_private[0]
+        return candidates[0] if candidates else None
 
 
 class TenantModelAdapterRepository(TenantScopedRepository[TenantModelAdapter]):

@@ -21,8 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from hermes_rpt.connectors.query_guard import assert_object_allowed
 from hermes_rpt.features.contract import FeatureKind, FeatureSpec
-from hermes_rpt.features.cost_guard import enforce_window_limit, related_row_limit
+from hermes_rpt.features.cost_guard import (
+    dataset_build_row_limit,
+    enforce_window_limit,
+    related_row_limit,
+)
 from hermes_rpt.mappings.document import MappingDocument
+from hermes_rpt.ontology.registry import get_ontology
+from hermes_rpt.ontology.values import LogicalType
 
 
 class ColumnNotDirectlyMappedError(Exception):
@@ -44,6 +50,15 @@ def resolve_column(document: MappingDocument, field_name: str) -> str | None:
     return first_source.column
 
 
+def identity_field_name(document: MappingDocument) -> str:
+    """The ontology field name of a document's single identity field — public so callers
+    outside this module (e.g. `hermes_rpt.datasets.builder`, reading a
+    `fetch_rows_in_range` row) know which key holds the business reference, without
+    duplicating `_identity_column`'s validation."""
+
+    return _identity_column(document)[0]
+
+
 def _identity_column(document: MappingDocument) -> tuple[str, str]:
     """Returns (ontology_field_name, source_column_name) for the document's single identity
     field — Phase 8 features only ever key off one identity column per entity."""
@@ -57,6 +72,35 @@ def _identity_column(document: MappingDocument) -> tuple[str, str]:
     if column is None:
         raise ColumnNotDirectlyMappedError(f"Identity field {field_name!r} has no column mapping")
     return field_name, column
+
+
+def _datetime_field_names(document: MappingDocument) -> frozenset[str]:
+    """Ontology field names for `document.entity` whose `logical_type` is DATETIME — used to
+    coerce only the fields that are actually supposed to be datetimes (never a heuristic
+    string-parse guess against arbitrary values like a business identifier)."""
+
+    entity = get_ontology().get_entity(document.entity)
+    return frozenset(f.name for f in entity.fields if f.logical_type == LogicalType.DATETIME)
+
+
+def _coerce_row_datetimes(
+    row: dict[str, Any], *, datetime_fields: frozenset[str]
+) -> dict[str, Any]:
+    """Postgres/asyncpg always returns a real, timezone-aware `datetime` for a timestamp
+    column; this exists only for portability with drivers (e.g. sqlite3, used by
+    `hermes_rpt.datasets.builder`'s SQLite-backed dev/test fixtures) that round-trip a
+    TEXT-affinity column as a naive ISO string instead. Mirrors the identical fallback in
+    `compile_and_run_related_feature` and `hermes_rpt.features.derive._coerce_datetime`."""
+
+    coerced = dict(row)
+    for field_name in datetime_fields:
+        value = coerced.get(field_name)
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value)
+            coerced[field_name] = (
+                parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+            )
+    return coerced
 
 
 def _check_allowlisted(
@@ -106,6 +150,119 @@ async def fetch_target_row(
         result = await conn.execute(stmt, {"business_reference": business_reference})
         row = result.mappings().first()
     return dict(row) if row is not None else None
+
+
+async def fetch_rows_in_range(
+    engine: AsyncEngine,
+    document: MappingDocument,
+    *,
+    time_field: str,
+    start: datetime,
+    end: datetime,
+    needed_fields: set[str],
+    schema_allowlist: list[str],
+    table_allowlist: list[str],
+) -> list[dict[str, Any]]:
+    """Enumerates target-entity rows within `[start, end)` on `time_field` — used only by
+    offline dataset building (`hermes_rpt.datasets.builder`) to discover candidate
+    business_references, never by online feature extraction (`fetch_target_row`), which always
+    keys off one already-known identity. Every needed field is fetched directly here (unlike
+    `FeatureExtractionService.extract`, this is not filtered to a feature contract's declared
+    fields) since dataset building also needs label-determining fields the contract deliberately
+    excludes from feature extraction to avoid the label leaking into the features themselves."""
+
+    _check_allowlisted(document, schema_allowlist=schema_allowlist, table_allowlist=table_allowlist)
+    identity_field, identity_column = _identity_column(document)
+    time_column = resolve_column(document, time_field)
+    if time_column is None:
+        return []
+
+    columns: dict[str, str] = {identity_field: identity_column}
+    for field_name in needed_fields | {time_field}:
+        if field_name in columns:
+            continue
+        column = resolve_column(document, field_name)
+        if column is not None:
+            columns[field_name] = column
+
+    table = sa.table(document.source.table, *(sa.column(c) for c in columns.values()))
+    table.schema = document.source.schema_name
+    stmt = (
+        sa.select(*(sa.column(c).label(name) for name, c in columns.items()))
+        .select_from(table)
+        .where(
+            sa.column(time_column) >= sa.bindparam("start"),
+            sa.column(time_column) < sa.bindparam("end"),
+        )
+        .order_by(sa.column(time_column))
+        .limit(dataset_build_row_limit())
+    )
+
+    datetime_fields = _datetime_field_names(document)
+    async with engine.connect() as conn:
+        result = await conn.execute(stmt, {"start": start, "end": end})
+        rows = result.mappings().all()
+    return [_coerce_row_datetimes(dict(row), datetime_fields=datetime_fields) for row in rows]
+
+
+async def fetch_related_records(
+    engine: AsyncEngine,
+    document: MappingDocument,
+    *,
+    join_field: str,
+    join_value: Any,
+    timestamp_field: str | None,
+    prediction_time: datetime | None,
+    limit: int,
+    schema_allowlist: list[str],
+    table_allowlist: list[str],
+) -> list[dict[str, Any]]:
+    """Fetches up to `limit` *raw*, fully-mapped records of one related entity — every mapped
+    field, not a feature contract's declared subset — for Hermes-RPT's relational context
+    (`hermes_rpt.models.transformer.context`), which needs individual records to encode, unlike
+    `FeatureExtractionService`'s aggregate `COUNT`/`RATIO`/etc. recipes. Deterministic ordering
+    (most-recent-first when a timestamp is available, otherwise database order) — "use
+    deterministic sampling for reproducible evaluation" (Phase 11) — and, like every other
+    related-entity query in this module, allowlist-checked and `< prediction_time` when a
+    timestamp field is given.
+    """
+
+    _check_allowlisted(document, schema_allowlist=schema_allowlist, table_allowlist=table_allowlist)
+    join_column = resolve_column(document, join_field)
+    if join_column is None:
+        return []
+
+    all_fields = {**document.identity, **document.fields}
+    columns: dict[str, str] = {}
+    for field_name in all_fields:
+        column = resolve_column(document, field_name)
+        if column is not None:
+            columns[field_name] = column
+
+    table = sa.table(document.source.table, *(sa.column(c) for c in columns.values()))
+    table.schema = document.source.schema_name
+    conditions = [sa.column(join_column) == sa.bindparam("join_value")]
+    params: dict[str, Any] = {"join_value": join_value}
+
+    timestamp_column = resolve_column(document, timestamp_field) if timestamp_field else None
+    if timestamp_column is not None and prediction_time is not None:
+        conditions.append(sa.column(timestamp_column) < sa.bindparam("prediction_time"))
+        params["prediction_time"] = prediction_time
+
+    stmt = (
+        sa.select(*(sa.column(c).label(name) for name, c in columns.items()))
+        .select_from(table)
+        .where(*conditions)
+    )
+    if timestamp_column is not None:
+        stmt = stmt.order_by(sa.column(timestamp_column).desc())
+    stmt = stmt.limit(limit)
+
+    datetime_fields = _datetime_field_names(document)
+    async with engine.connect() as conn:
+        result = await conn.execute(stmt, params)
+        rows = result.mappings().all()
+    return [_coerce_row_datetimes(dict(row), datetime_fields=datetime_fields) for row in rows]
 
 
 async def compile_and_run_related_feature(
