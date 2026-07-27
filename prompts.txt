@@ -1,0 +1,1298 @@
+# Hermes-RPT Development Prompts
+
+## Prompt 0 — Create the Master Project Plan
+
+You are the lead AI platform architect and machine-learning engineer for a new project named **Hermes-RPT**.
+
+Hermes-RPT will be a secure, multi-tenant Relational Pretrained Transformer platform for Hermes VMS. It must learn from structured fleet, logistics and operational data.
+
+Each Hermes customer may connect a completely different database:
+
+* Different database engines.
+* Different table names.
+* Different column names.
+* Different relationships.
+* Different data quality.
+* Different business terminology.
+* Different available historical records.
+
+The platform must ensure that a customer can access only their own database, mappings, datasets, features, model adaptations, predictions, logs and reports.
+
+Before writing application code:
+
+1. Analyse the complete requirement.
+2. Write an implementation plan in `docs/IMPLEMENTATION_PLAN.md`.
+3. Write an architecture document in `docs/ARCHITECTURE.md`.
+4. Write a threat model in `docs/THREAT_MODEL.md`.
+5. Write an initial relational-model research plan in `docs/MODEL_RESEARCH_PLAN.md`.
+6. Write architectural decision records under `docs/adr/`.
+7. Create a phased task checklist in `TASKS.md`.
+
+The architecture must include:
+
+* Tenant service.
+* Identity and access service.
+* Customer database connector service.
+* Secret-provider abstraction.
+* Schema discovery service.
+* Schema mapping service.
+* Canonical Hermes ontology.
+* Feature extraction service.
+* Dataset builder.
+* Baseline models.
+* Relational Transformer.
+* Training pipeline.
+* Inference service.
+* Model registry.
+* Prediction audit service.
+* Schema-drift detection.
+* Data-drift and model-performance monitoring.
+
+Security invariants:
+
+* Never accept `tenant_id` as an authoritative value from an editable request body.
+* Resolve the tenant from a verified authentication token or trusted service identity.
+* Never expose raw database passwords through an API.
+* Never log secrets.
+* Never allow unrestricted model-generated SQL.
+* Never reuse one tenant’s connection pool for another tenant.
+* Never place records from separate tenants into the same cache key, dataset or prediction request.
+* Never train a shared model on customer data without explicit permission represented in the platform.
+* Customer database connections must be read-only.
+* All access must be auditable.
+* Deny access when tenant context is missing or inconsistent.
+* Fail closed rather than guessing when schemas change.
+
+Do not implement everything in this prompt. Produce the plans and repository design first.
+
+At the end:
+
+* Show the proposed repository structure.
+* List unresolved architectural assumptions.
+* Recommend the smallest viable first prediction task.
+* Run documentation checks where available.
+* Do not claim implementation is complete.
+
+---
+
+## Prompt 1 — Initialise the Repository
+
+Read all files created in the previous phase, especially:
+
+* `docs/IMPLEMENTATION_PLAN.md`
+* `docs/ARCHITECTURE.md`
+* `docs/THREAT_MODEL.md`
+* `docs/MODEL_RESEARCH_PLAN.md`
+* `TASKS.md`
+
+Create the initial Hermes-RPT monorepo.
+
+Use:
+
+* Python 3.12 or a currently supported compatible version.
+* FastAPI.
+* Pydantic.
+* SQLAlchemy async APIs.
+* Alembic.
+* PostgreSQL as the Hermes control-plane database.
+* PyTorch.
+* MLflow.
+* pytest.
+* Ruff.
+* mypy.
+* Docker Compose.
+* Makefile or equivalent task runner.
+
+Do not blindly pin versions from this prompt. Determine compatible current stable versions and record them in the dependency files.
+
+Use a structure similar to:
+
+```text
+hermes-rpt/
+├── apps/
+│   ├── api/
+│   ├── worker/
+│   └── trainer/
+├── src/hermes_rpt/
+│   ├── auth/
+│   ├── tenants/
+│   ├── connectors/
+│   ├── secrets/
+│   ├── schemas/
+│   ├── mappings/
+│   ├── ontology/
+│   ├── features/
+│   ├── datasets/
+│   ├── models/
+│   ├── training/
+│   ├── inference/
+│   ├── registry/
+│   ├── audit/
+│   ├── monitoring/
+│   └── common/
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── security/
+│   └── model/
+├── configs/
+├── migrations/
+├── notebooks/
+├── scripts/
+├── docs/
+├── docker/
+├── pyproject.toml
+├── docker-compose.yml
+├── Makefile
+├── .env.example
+├── .gitignore
+├── README.md
+└── TASKS.md
+```
+
+Requirements:
+
+1. Configure typed application settings.
+2. Validate required environment variables at startup.
+3. Add structured logging with secret redaction.
+4. Add correlation IDs and request IDs.
+5. Add `/health/live`, `/health/ready` and `/version`.
+6. Configure PostgreSQL, MLflow and local development services through Docker Compose.
+7. Add pre-commit hooks.
+8. Add lint, type-check, test and security-check commands.
+9. Add a GitHub Actions CI workflow.
+10. Add a basic development README.
+11. Add an Apache-2.0 or appropriate licence only after recording the decision in an ADR.
+12. Do not add real credentials.
+
+Create smoke tests and run:
+
+* Formatting.
+* Linting.
+* Type checking.
+* Unit tests.
+* Docker Compose configuration validation.
+
+Update `TASKS.md` with completed and remaining work.
+
+---
+
+## Prompt 2 — Implement the Multi-Tenant Control Plane
+
+Implement the Hermes-RPT control-plane data model.
+
+Create entities for:
+
+* Tenant.
+* User.
+* Role.
+* UserTenantMembership.
+* CustomerDatabaseConnection.
+* DatabaseCredentialReference.
+* SchemaSnapshot.
+* SchemaMapping.
+* MappingVersion.
+* DataAccessPolicy.
+* PredictionTaskDefinition.
+* PredictionRequest.
+* PredictionResult.
+* AuditEvent.
+* ModelVersion.
+* TenantModelAdapter.
+* DataUsageConsent.
+
+Use UUIDs internally.
+
+Every tenant-owned table must include:
+
+* `tenant_id`.
+* Creation timestamp.
+* Update timestamp.
+* Optimistic-locking or version field where appropriate.
+
+Implement roles:
+
+* Platform Admin.
+* Tenant Admin.
+* Data Steward.
+* ML Engineer.
+* Manager.
+* Operator.
+* Read-only Auditor.
+* Service Account.
+
+Requirements:
+
+1. Add Alembic migrations.
+2. Add repositories and service-layer abstractions.
+3. Do not let API handlers query ORM models directly.
+4. Enforce tenant ownership in repositories and services.
+5. Make tenant context mandatory for tenant-owned operations.
+6. Reject mismatched tenant and resource IDs.
+7. Add uniqueness constraints scoped by tenant.
+8. Add database indexes for tenant-scoped access.
+9. Consider PostgreSQL Row-Level Security as defence in depth.
+10. Do not rely only on Row-Level Security; preserve application-layer checks.
+11. Add test factories.
+12. Add negative security tests proving Tenant A cannot access Tenant B records.
+
+Create a `TenantContext` abstraction containing:
+
+* Trusted tenant ID.
+* Authenticated principal ID.
+* Roles.
+* Scopes.
+* Correlation ID.
+
+The tenant ID must be resolved from trusted authentication claims, never directly trusted from query parameters or request bodies.
+
+Run migrations and tests. Update documentation and `TASKS.md`.
+
+---
+
+## Prompt 3 — Add Authentication and Authorisation
+
+Implement production-oriented authentication and authorisation boundaries.
+
+Use an abstraction that can later integrate with an external OpenID Connect provider. For local development, implement a safe development identity provider or signed test tokens.
+
+Requirements:
+
+1. Validate JWT signature, issuer, audience, expiry and required claims.
+2. Resolve `TenantContext` from verified claims.
+3. Implement role-based and permission-based authorisation.
+4. Add scopes such as:
+
+   * `tenant:read`
+   * `tenant:admin`
+   * `connection:manage`
+   * `schema:discover`
+   * `mapping:manage`
+   * `prediction:execute`
+   * `model:train`
+   * `model:promote`
+   * `audit:read`
+5. Prevent tenant selection through an untrusted HTTP header.
+6. Add service-to-service authentication.
+7. Add short-lived credentials and token-expiry handling.
+8. Add audit events for authentication and authorisation failures.
+9. Add rate-limit interfaces, even if the initial implementation is simple.
+10. Return safe errors without leaking internal details.
+11. Do not implement a custom cryptographic algorithm.
+12. Do not store plaintext passwords.
+
+Add security tests for:
+
+* Missing token.
+* Expired token.
+* Invalid issuer.
+* Invalid audience.
+* Missing tenant claim.
+* Missing permission.
+* Tenant/resource mismatch.
+* Service token used as a human token.
+* Cross-tenant object access.
+
+Document the authentication flow and trust boundaries.
+
+---
+
+## Prompt 4 — Implement Secret Management and Database Connections
+
+Implement a secure customer database connection subsystem.
+
+Initially support:
+
+* PostgreSQL.
+
+Prepare interfaces for:
+
+* MySQL.
+* Microsoft SQL Server.
+* Oracle Database.
+
+Do not require those additional drivers to be functional yet unless they can be added cleanly.
+
+Create:
+
+* `SecretProvider` interface.
+* Local development secret provider.
+* Future Azure Key Vault adapter interface.
+* Future Google Secret Manager adapter interface.
+* Database connector interface.
+* PostgreSQL connector.
+* Per-tenant connection registry.
+* Connection health-check service.
+* Connection lifecycle manager.
+
+Important rules:
+
+* Store only secret references in the Hermes control-plane database.
+* Never return resolved secrets through an API.
+* Never include connection strings in logs or exceptions.
+* Create a separate connection pool for every tenant connection.
+* Bind every pool to both `tenant_id` and connection ID.
+* Evict pools safely when credentials change or a connection is disabled.
+* Apply connection and statement timeouts.
+* Use read-only transactions.
+* Limit concurrency.
+* Prevent write statements.
+* Do not provide unrestricted raw SQL endpoints.
+* Support TLS options.
+* Allow an approved schema allowlist.
+* Allow an approved table/view allowlist.
+* Record access in audit logs.
+
+Implement APIs to:
+
+* Register connection metadata.
+* Validate a connection.
+* Enable or disable a connection.
+* Rotate the secret reference.
+* View safe connection status.
+* Delete connection metadata without exposing the secret.
+
+Add integration tests using two separate PostgreSQL customer databases:
+
+* Tenant Alpha database.
+* Tenant Beta database.
+
+Use intentionally different schemas.
+
+Prove through automated tests that:
+
+* Tenant Alpha cannot obtain Tenant Beta’s engine or session.
+* Pools are not shared.
+* Credential references are not exposed.
+* Writes are rejected.
+* Disallowed schemas are rejected.
+* Logs contain no passwords.
+
+---
+
+## Prompt 5 — Build Schema Discovery and Schema Fingerprinting
+
+Implement safe relational schema discovery for connected PostgreSQL databases.
+
+Discover only approved metadata:
+
+* Schemas.
+* Tables.
+* Views.
+* Columns.
+* SQL types.
+* Nullability.
+* Primary keys.
+* Foreign keys.
+* Unique constraints.
+* Index metadata.
+* Approximate row counts where safe.
+* Table and column comments.
+
+Optional profiling must be explicitly enabled and limited.
+
+When profiling is enabled:
+
+* Use small samples.
+* Limit row count.
+* Mask likely personal fields.
+* Never collect passwords, access tokens or credential columns.
+* Support denylisted column-name patterns.
+* Store profiling summaries rather than complete source rows.
+* Audit every profiling operation.
+
+Create a versioned `SchemaSnapshot`.
+
+Generate deterministic fingerprints for:
+
+* Full schema.
+* Individual tables.
+* Columns.
+* Relationships.
+
+Implement schema-drift comparison:
+
+* Added table.
+* Removed table.
+* Renamed-looking table.
+* Added column.
+* Removed column.
+* Changed type.
+* Changed nullability.
+* Changed relationship.
+
+Do not automatically approve inferred renames.
+
+Add APIs to:
+
+* Start discovery.
+* Read discovery status.
+* View safe schema metadata.
+* Compare snapshots.
+* Acknowledge drift.
+
+Use background jobs for discovery so HTTP requests do not remain open for long-running work.
+
+Create fixtures where Alpha and Beta represent the same fleet concepts with different names.
+
+Add tests for permissions, isolation, masking, limits and drift detection.
+
+---
+
+## Prompt 6 — Create the Canonical Hermes Ontology
+
+Build a versioned canonical ontology for Hermes VMS.
+
+Create initial entities:
+
+### Fleet
+
+* Vehicle.
+* VehicleType.
+* VehicleAssignment.
+* OdometerReading.
+* VehicleAvailability.
+
+### Workforce
+
+* Driver.
+* Operator.
+* Shift.
+* DriverAssignment.
+* SafetyEvent.
+
+### Operations
+
+* Trip.
+* Route.
+* RouteStop.
+* Delivery.
+* Order.
+* Package.
+* Customer.
+
+### Maintenance
+
+* MaintenanceEvent.
+* WorkOrder.
+* Fault.
+* SparePart.
+* InventoryTransaction.
+* Tyre.
+* TyreInstallation.
+
+### Cost and consumption
+
+* FuelEvent.
+* TripExpense.
+* MaintenanceCost.
+* TollEvent.
+
+Define canonical field types, units and semantics.
+
+Examples:
+
+* Distance is represented in kilometres internally.
+* Fuel quantity is represented in litres internally.
+* Monetary values preserve their currency code.
+* Datetimes are stored in UTC with original timezone metadata where needed.
+* Business IDs remain strings.
+* Missing values are explicitly represented.
+* Personally identifiable data is classified.
+
+Create:
+
+* Ontology definitions in machine-readable YAML or JSON.
+* Pydantic models.
+* Ontology version.
+* Unit conversion layer.
+* Data classification labels.
+* Required and optional field metadata.
+* Relationship definitions.
+* Validation rules.
+
+Do not hardcode customer table names into the ontology.
+
+Add documentation showing how different source schemas map to the same canonical entity.
+
+Add validation and unit tests.
+
+---
+
+## Prompt 7 — Implement Schema Mapping
+
+Create a versioned schema-mapping system that maps each customer’s schema to the canonical Hermes ontology.
+
+Support:
+
+* Direct column mapping.
+* Type conversion.
+* Unit conversion.
+* Static values.
+* Null handling.
+* Enumerated-value mapping.
+* Filters.
+* Joins through approved relationships.
+* Derived fields through a safe expression language.
+* Timestamp transformation.
+* Source-priority rules.
+
+Do not allow arbitrary Python or unrestricted SQL in mapping definitions.
+
+Example:
+
+```yaml
+entity: Vehicle
+source:
+  schema: public
+  table: fleet_vehicle
+identity:
+  vehicle_id:
+    column: vehicle_id
+fields:
+  registration_number:
+    column: registration_no
+  current_odometer_km:
+    column: odometer_km
+  last_service_at:
+    column: last_service
+```
+
+Create mapping states:
+
+* Draft.
+* Pending validation.
+* Approved.
+* Active.
+* Deprecated.
+* Rejected.
+
+Requirements:
+
+1. Every mapping belongs to one tenant.
+2. Every mapping references a schema snapshot.
+3. Every mapping references an ontology version.
+4. Mappings are immutable after activation.
+5. Changes create a new version.
+6. Only approved active mappings can be used in production.
+7. Drift can automatically suspend an affected mapping, but cannot automatically rewrite it.
+8. Add confidence and explanation fields for future AI-assisted suggestions.
+9. Require human approval for AI-generated mapping suggestions.
+10. Audit all lifecycle changes.
+
+Build an initial deterministic mapping suggestion engine based on:
+
+* Normalised column-name similarity.
+* Data-type compatibility.
+* Key relationships.
+* Table and column comments.
+* Safe profile statistics.
+
+Do not call an external LLM yet.
+
+Add tests using Alpha and Beta’s different schemas.
+
+---
+
+## Prompt 8 — Build Safe Feature Extraction
+
+Implement a secure feature extraction layer.
+
+The model must not generate or execute arbitrary SQL.
+
+Create a `PredictionTaskRegistry`. Start with one task:
+
+> Delivery delay risk.
+
+Define an explicit feature contract for the task.
+
+Possible features:
+
+* Planned departure hour.
+* Planned trip distance.
+* Number of stops.
+* Vehicle age.
+* Odometer.
+* Days since last maintenance.
+* Previous breakdown count.
+* Driver’s recent trip count.
+* Driver’s historical late-delivery ratio.
+* Route historical delay ratio.
+* Load quantity.
+* Loading-start delay.
+* Day of week.
+* Recent fuel anomaly count.
+
+Do not assume all customers have every feature.
+
+The task definition must specify:
+
+* Feature name.
+* Canonical source.
+* Data type.
+* Missing-value behaviour.
+* Leakage risk.
+* Historical window.
+* Availability timestamp.
+* Optional/required status.
+
+Prevent target leakage. A feature must only use information that would have existed at the prediction timestamp.
+
+Create:
+
+* Feature specification classes.
+* Tenant-aware extraction planner.
+* Mapping resolver.
+* Safe query compiler.
+* Query validator.
+* Query-cost guard.
+* Feature normaliser.
+* Feature lineage record.
+* Feature batch format.
+* Point-in-time correctness tests.
+
+Security requirements:
+
+* Query only allowlisted mapped objects.
+* Apply row and time-window limits.
+* Parameterise all values.
+* Reject unbounded extraction.
+* Record tenant, mapping version, schema snapshot, feature version and extraction timestamp.
+* Never mix rows from different tenants.
+
+Add a dry-run mode that displays safe query plans without exposing secrets.
+
+Add integration tests for Alpha and Beta.
+
+---
+
+## Prompt 9 — Create Dataset Building and Data Quality Pipelines
+
+Build a tenant-isolated dataset pipeline for the delivery-delay prediction task.
+
+Create:
+
+* Dataset definition.
+* Dataset build job.
+* Dataset manifest.
+* Train/validation/test split strategy.
+* Data-quality report.
+* Feature statistics.
+* Label statistics.
+* Dataset lineage.
+* Dataset checksum.
+* Point-in-time validation.
+* Leakage checks.
+
+Dataset requirements:
+
+* Every dataset belongs to one tenant unless explicitly marked as an approved shared research dataset.
+* A dataset cannot contain multiple tenants by accident.
+* Customer records must not be committed to Git.
+* Generated data must be stored outside the source repository.
+* Manifests may contain metadata but not sensitive raw values.
+* Use temporal splits rather than random splits for delay prediction.
+* Avoid placing future events into earlier training rows.
+* Track ontology, mapping, feature and schema versions.
+
+Create synthetic data generators for development.
+
+Generate:
+
+* Tenant Alpha synthetic fleet dataset.
+* Tenant Beta synthetic fleet dataset.
+* Different source schemas.
+* Similar canonical concepts.
+* Realistic missing values.
+* Class imbalance.
+* Schema drift scenarios.
+* Delayed deliveries.
+* Vehicle and route histories.
+
+Do not use real customer data in tests.
+
+Generate quality checks for:
+
+* Duplicate entity IDs.
+* Invalid dates.
+* Negative distances.
+* Impossible fuel quantities.
+* Unrecognised statuses.
+* Missing labels.
+* Severe class imbalance.
+* Future timestamps.
+* Cross-tenant contamination.
+
+Add a command such as:
+
+```bash
+make build-synthetic-dataset
+```
+
+Run it and produce a safe sample data-quality report.
+
+---
+
+## Prompt 10 — Implement Baseline Models First
+
+Before creating the Relational Transformer, implement baseline models for delivery-delay prediction.
+
+Use suitable established tabular baselines available in the project environment, for example:
+
+* Logistic regression.
+* Gradient-boosted trees.
+* A small multilayer perceptron.
+
+Do not require every optional library if it complicates portability.
+
+Create:
+
+* Common model interface.
+* Training configuration.
+* Reproducible seeds.
+* Metrics.
+* Threshold selection.
+* Calibration evaluation.
+* Feature importance or explainability where supported.
+* MLflow experiment tracking.
+* Artifact registration.
+* Model signature.
+* Evaluation report.
+
+Metrics should include:
+
+* ROC-AUC.
+* PR-AUC.
+* Precision.
+* Recall.
+* F1.
+* Brier score.
+* Calibration.
+* Confusion matrix at a chosen threshold.
+
+Because delivery delays may be imbalanced, do not rely on accuracy alone.
+
+Track:
+
+* Tenant ID or synthetic research-dataset ID.
+* Dataset version.
+* Feature version.
+* Mapping version.
+* Code revision.
+* Training configuration.
+* Metrics.
+* Model checksum.
+
+Do not promote a model automatically.
+
+Create model stages or aliases such as:
+
+* Candidate.
+* Staging.
+* Production.
+* Archived.
+
+Add tests for:
+
+* Reproducibility.
+* Model serialization.
+* Input-schema validation.
+* Missing features.
+* Registry metadata.
+* Tenant model access isolation.
+
+Produce a comparison report and select the strongest baseline.
+
+---
+
+## Prompt 11 — Implement Hermes Relational Transformer v0.1
+
+Implement the first research model named:
+
+**Hermes-RPT-0.1**
+
+This is an experimental relational transformer, not yet a production foundation model.
+
+Design it so a training example may include related records:
+
+* One target trip.
+* Vehicle history.
+* Driver history.
+* Route history.
+* Previous deliveries.
+* Maintenance events.
+* Fuel events.
+
+Build components such as:
+
+* Numeric feature encoder.
+* Categorical feature encoder.
+* Timestamp encoder.
+* Entity/table type embeddings.
+* Column embeddings.
+* Missing-value embeddings.
+* Record encoder.
+* Relationship embeddings.
+* Transformer blocks.
+* Attention masks.
+* Target entity pooling.
+* Classification head.
+
+Represent relationships explicitly, for example:
+
+* Trip uses Vehicle.
+* Trip assigned to Driver.
+* Trip follows Route.
+* Delivery belongs to Trip.
+* MaintenanceEvent belongs to Vehicle.
+
+Important requirements:
+
+1. Do not encode tenant identity as a predictive feature.
+2. Never combine relational contexts from different tenants.
+3. Support variable numbers of related records.
+4. Support missing tables and fields.
+5. Use masks rather than fake values where appropriate.
+6. Cap relational context sizes.
+7. Use deterministic sampling for reproducible evaluation.
+8. Document tensor shapes.
+9. Add shape and masking tests.
+10. Add a tiny overfitting test on a small synthetic dataset.
+11. Add numerical-stability checks.
+12. Add checkpoint save/load tests.
+13. Compare the model against the strongest baseline.
+14. Do not claim success merely because training loss falls.
+15. Report computational cost and limitations.
+
+Create configuration-driven model sizes:
+
+* Tiny.
+* Small.
+* Base experimental.
+
+Only train Tiny initially.
+
+Track experiments in MLflow.
+
+Write `docs/HERMES_RPT_0_1.md` explaining:
+
+* Architecture.
+* Input representation.
+* Relationship representation.
+* Training objective.
+* Limitations.
+* Security assumptions.
+* Difference from a language model.
+* Future pretraining objectives.
+
+---
+
+## Prompt 12 — Add Relational Pretraining Tasks
+
+Extend Hermes-RPT with self-supervised relational pretraining.
+
+Implement configurable objectives such as:
+
+* Masked cell reconstruction.
+* Masked categorical-value prediction.
+* Numeric-value reconstruction.
+* Relationship-link prediction.
+* Foreign-key target prediction.
+* Record-context matching.
+* Table/column semantic alignment.
+* Temporal-order prediction.
+
+Avoid objectives that expose direct identifiers unnecessarily.
+
+Create a pretraining data collator that:
+
+* Applies masks.
+* Preserves tenant boundaries.
+* Preserves relation structure.
+* Tracks which values are labels.
+* Avoids masking protected fields into memorisation targets.
+* Supports variable relational contexts.
+
+Add a multi-task loss with configurable weights.
+
+Requirements:
+
+* Pretraining datasets remain tenant-isolated by default.
+* Shared pretraining requires an explicit approved dataset class and consent record.
+* Direct identifiers should be removed, hashed or excluded according to policy.
+* Add memorisation-risk tests using synthetic canary values.
+* Ensure canaries are not returned through inference APIs.
+* Track pretraining lineage.
+* Add reproducibility checks.
+* Add ablation configuration.
+* Compare pretrained and non-pretrained Tiny models.
+
+Write an experimental report. Be honest when synthetic data is insufficient to demonstrate generalisation.
+
+---
+
+## Prompt 13 — Build the Inference API
+
+Implement production-style inference for the approved delivery-delay task.
+
+Suggested endpoint:
+
+```http
+POST /v1/predictions/delivery-delay
+```
+
+The request should contain business identifiers and prediction timestamp, not a tenant-selected connection string or arbitrary SQL.
+
+Example request:
+
+```json
+{
+  "trip_id": "TRIP-8491",
+  "prediction_time": "2026-07-25T08:30:00Z"
+}
+```
+
+The trusted tenant must come from the authentication context.
+
+The inference flow:
+
+1. Authenticate.
+2. Resolve tenant context.
+3. Authorise `prediction:execute`.
+4. Resolve active tenant connection.
+5. Resolve active mapping.
+6. Resolve active feature definition.
+7. Extract point-in-time features.
+8. Validate model input.
+9. Resolve authorised model version.
+10. Run prediction.
+11. Generate safe explanation.
+12. Persist prediction lineage.
+13. Emit audit event.
+14. Return response.
+
+Example response:
+
+```json
+{
+  "prediction_id": "uuid",
+  "trip_id": "TRIP-8491",
+  "delay_probability": 0.78,
+  "risk_level": "high",
+  "model_version": "hermes-rpt-0.1",
+  "feature_version": "delivery-delay-v1",
+  "prediction_time": "2026-07-25T08:30:00Z",
+  "explanations": [
+    {
+      "factor": "loading_start_delay_minutes",
+      "direction": "increases_risk"
+    }
+  ]
+}
+```
+
+Do not expose:
+
+* Raw SQL.
+* Passwords.
+* Internal connection strings.
+* Other tenants’ identifiers.
+* Sensitive raw source values.
+* Unsupported causal claims.
+
+Add idempotency support.
+
+Add timeout, retry and circuit-breaker interfaces.
+
+Add security, integration, load and contract tests.
+
+---
+
+## Prompt 14 — Add Model Registry and Per-Tenant Adaptation
+
+Implement model governance.
+
+Support:
+
+* Shared base models.
+* Tenant-specific models.
+* Tenant-specific adapters.
+* Model aliases.
+* Approval workflow.
+* Rollback.
+* Model deactivation.
+* Compatibility checks.
+
+A tenant may use:
+
+```text
+Shared Hermes-RPT base
+        +
+Tenant-specific private adapter
+```
+
+Requirements:
+
+* A tenant adapter belongs to exactly one tenant.
+* Tenant A cannot load Tenant B’s adapter.
+* Training jobs must include trusted tenant context.
+* Checkpoints must be stored in tenant-specific paths.
+* Registry metadata must carry tenant ownership.
+* Shared models must never contain tenant-private adapter weights.
+* Promotion requires authorised approval.
+* Incompatible ontology or feature versions must block deployment.
+* Every prediction records the exact base model and adapter versions.
+* Rollback must be tested.
+
+Add a tenant adaptation experiment using synthetic Alpha and Beta data.
+
+Compare:
+
+* Shared base only.
+* Alpha private adapter.
+* Beta private adapter.
+
+Prove that adapter lookup is tenant-isolated.
+
+---
+
+## Prompt 15 — Add Monitoring and Drift Detection
+
+Implement monitoring for:
+
+### Platform security
+
+* Cross-tenant access attempts.
+* Authentication failures.
+* Authorisation failures.
+* Secret-resolution failures.
+* Disallowed query attempts.
+* Unexpected connection usage.
+
+### Data and schema
+
+* Schema fingerprint changes.
+* Mapping suspension.
+* Missing-feature rate.
+* Feature-distribution drift.
+* Label-distribution drift.
+* Invalid data rate.
+
+### Model
+
+* Prediction volume.
+* Latency.
+* Error rate.
+* Prediction distribution.
+* Calibration drift.
+* Precision/recall when labels arrive.
+* Model version usage.
+* Adapter version usage.
+
+Requirements:
+
+* Metrics must be tenant-scoped.
+* Dashboards must not expose one tenant to another.
+* Avoid high-cardinality labels containing raw business IDs.
+* Logs must redact personal and secret data.
+* Alerts should identify the tenant internally but respect access controls.
+* Add an incident runbook.
+* Add a schema-drift runbook.
+* Add a model rollback runbook.
+
+Implement safe Prometheus-compatible metrics interfaces if appropriate.
+
+Add tests for metric isolation and redaction.
+
+---
+
+## Prompt 16 — Perform Security Hardening
+
+Perform a dedicated security review of the entire repository.
+
+Review:
+
+* Authentication.
+* Authorisation.
+* Tenant isolation.
+* Object-level access.
+* Connection-pool isolation.
+* Secret handling.
+* SQL construction.
+* Mapping expressions.
+* Dataset isolation.
+* Model registry isolation.
+* Cache isolation.
+* Logging.
+* Background jobs.
+* File paths.
+* Model artifacts.
+* Deserialization.
+* Dependency risks.
+* CI secrets.
+* Error messages.
+
+Create automated adversarial tests for:
+
+* Changing resource UUIDs.
+* Supplying another tenant ID.
+* Forged tenant headers.
+* Invalid JWT claims.
+* SQL injection.
+* Mapping-expression injection.
+* Path traversal.
+* Model artifact substitution.
+* Unsafe deserialization.
+* Cross-tenant cache keys.
+* Cross-tenant worker jobs.
+* Cross-tenant adapter loading.
+* Secrets appearing in logs.
+* Excessive queries.
+* Denial-of-service through large schema discovery.
+* Stale mapping use after schema drift.
+
+Use safe serialization formats where possible. Avoid loading untrusted pickle files.
+
+Produce:
+
+* `docs/SECURITY_REVIEW.md`
+* `docs/DATA_PROTECTION.md`
+* `docs/INCIDENT_RESPONSE.md`
+* `docs/CUSTOMER_DATABASE_GUIDE.md`
+
+Do not mark security work complete while critical or high-severity findings remain.
+
+---
+
+## Prompt 17 — End-to-End Demonstration
+
+Build an end-to-end local demonstration with two synthetic customers.
+
+### Tenant Alpha
+
+Database tables:
+
+* `fleet_vehicle`
+* `fleet_driver`
+* `transport_trip`
+* `delivery_record`
+* `maintenance_log`
+
+### Tenant Beta
+
+Database tables:
+
+* `assets`
+* `employees`
+* `jobs`
+* `consignments`
+* `service_orders`
+
+Both represent similar concepts but use different structures and terminology.
+
+Demonstrate:
+
+1. Create Alpha and Beta tenants.
+2. Register separate database connections.
+3. Discover both schemas.
+4. Create separate schema mappings.
+5. Validate mappings.
+6. Generate synthetic histories.
+7. Build tenant-specific datasets.
+8. Train baseline models.
+9. Train Hermes-RPT Tiny.
+10. Register model versions.
+11. Execute predictions.
+12. Show prediction lineage.
+13. Trigger schema drift.
+14. Suspend the affected mapping.
+15. Prove the unaffected tenant continues operating.
+16. Attempt cross-tenant access and prove it fails.
+17. Prove logs do not expose credentials.
+
+Create commands such as:
+
+```bash
+make demo-up
+make demo-seed
+make demo-discover
+make demo-map
+make demo-train
+make demo-predict
+make demo-security-test
+make demo-down
+```
+
+Create `docs/DEMO.md` with exact commands and expected outcomes.
+
+Run the complete demonstration and save only safe generated reports.
+
+---
+
+## Prompt 18 — Final Repository Audit
+
+Audit the complete Hermes-RPT repository.
+
+Do not add major new features during this phase.
+
+Check:
+
+* Architecture consistency.
+* Tenant isolation.
+* Test coverage.
+* Type safety.
+* Dependency health.
+* Migration consistency.
+* API documentation.
+* Model reproducibility.
+* Dataset lineage.
+* Schema drift behaviour.
+* Registry rollback.
+* Secret redaction.
+* Docker setup.
+* CI setup.
+* Documentation accuracy.
+* Dead code.
+* TODOs.
+* Placeholder implementations.
+* Production-readiness gaps.
+
+Run all available:
+
+* Formatting checks.
+* Linting.
+* Type checks.
+* Unit tests.
+* Integration tests.
+* Security tests.
+* Model tests.
+* Migration tests.
+* Docker validation.
+* Dependency scans.
+
+Update:
+
+* `README.md`
+* `TASKS.md`
+* `docs/ARCHITECTURE.md`
+* `docs/SECURITY_REVIEW.md`
+* `docs/MODEL_RESEARCH_PLAN.md`
+* `CHANGELOG.md`
+
+Create `docs/RELEASE_READINESS.md` containing:
+
+* Completed capabilities.
+* Known limitations.
+* Security status.
+* Model-performance status.
+* Required infrastructure.
+* Production blockers.
+* Recommended next milestone.
+
+Do not describe Hermes-RPT as equivalent to SAP-RPT.
+
+Describe it accurately as:
+
+> An early, secure, multi-tenant relational machine-learning and transformer research platform for fleet and logistics data.
+
+Commit only source code, configuration templates, synthetic fixtures and safe documentation. Do not commit secrets, real customer data, trained private models or database dumps.

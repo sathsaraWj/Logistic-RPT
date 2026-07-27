@@ -1,0 +1,39 @@
+# Environments
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Test / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Generated data / models — never committed, see docs/IMPLEMENTATION_PLAN.md and
+# docs/adr/0006-canonical-ontology-decoupled-from-customer-schemas.md.
+data/
+artifacts/
+mlruns/
+mlflow.db
+*.ckpt
+*.pt
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

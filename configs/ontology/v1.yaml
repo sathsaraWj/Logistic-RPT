@@ -1,0 +1,794 @@
+# Hermes canonical ontology, version 1.
+#
+# This file is the single source of truth for the canonical Hermes VMS entities — Pydantic
+# runtime models are generated from it (hermes_rpt.ontology.registry), never hand-duplicated.
+# No customer table or column name appears anywhere in this file (Phase 6 requirement); mapping
+# a specific customer's schema onto these entities is Phase 7's job, not this file's.
+#
+# Conventions used throughout:
+#   - logical_type: string | integer | float | boolean | date | datetime | enum | money
+#   - unit: only set on float fields — kilometres (distance), litres (volume), kilograms (mass)
+#   - datetime fields become a CanonicalDatetime {utc, original_timezone} value, not a bare
+#     timestamp — see hermes_rpt.ontology.values.
+#   - money fields become a Money {amount, currency_code} value — currency is never assumed.
+#   - every *_id field is a business identifier: logical_type string, never a numeric surrogate.
+
+version: "1"
+
+entities:
+  # ---------------------------------------------------------------------------------------
+  # Fleet
+  # ---------------------------------------------------------------------------------------
+  - name: Vehicle
+    domain: fleet
+    description: A single vehicle in a tenant's fleet.
+    fields:
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+        description: Tenant-scoped business identifier for the vehicle.
+      - name: vehicle_type_id
+        logical_type: string
+        is_business_identifier: true
+        description: References VehicleType.
+      - name: registration_number
+        logical_type: string
+        required: true
+        classification: internal
+      - name: make
+        logical_type: string
+      - name: model_name
+        logical_type: string
+      - name: manufacture_year
+        logical_type: integer
+      - name: current_odometer_km
+        logical_type: float
+        unit: kilometres
+      - name: is_active
+        logical_type: boolean
+        required: true
+      - name: acquired_at
+        logical_type: date
+    relationships:
+      - name: has_type
+        target_entity: VehicleType
+        cardinality: many_to_one
+      - name: has_assignments
+        target_entity: VehicleAssignment
+        cardinality: one_to_many
+      - name: has_odometer_readings
+        target_entity: OdometerReading
+        cardinality: one_to_many
+
+  - name: VehicleType
+    domain: fleet
+    description: A category of vehicle (light duty, heavy duty, trailer, ...).
+    fields:
+      - name: vehicle_type_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: name
+        logical_type: string
+        required: true
+      - name: category
+        logical_type: enum
+        enum_values: [light_duty, medium_duty, heavy_duty, trailer, other]
+        required: true
+      - name: fuel_type
+        logical_type: enum
+        enum_values: [diesel, petrol, electric, hybrid, cng, other]
+
+  - name: VehicleAssignment
+    domain: fleet
+    description: A period during which a vehicle is assigned to a driver.
+    fields:
+      - name: vehicle_assignment_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: driver_id
+        logical_type: string
+        is_business_identifier: true
+      - name: start_at
+        logical_type: datetime
+        required: true
+      - name: end_at
+        logical_type: datetime
+    relationships:
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+      - name: for_driver
+        target_entity: Driver
+        cardinality: many_to_one
+
+  - name: OdometerReading
+    domain: fleet
+    description: A single odometer reading for a vehicle at a point in time.
+    fields:
+      - name: odometer_reading_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: reading_km
+        logical_type: float
+        unit: kilometres
+        required: true
+      - name: recorded_at
+        logical_type: datetime
+        required: true
+      - name: source
+        logical_type: enum
+        enum_values: [telematics, manual, workshop, other]
+    relationships:
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+
+  - name: VehicleAvailability
+    domain: fleet
+    description: A period during which a vehicle had a particular availability status.
+    fields:
+      - name: vehicle_availability_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: status
+        logical_type: enum
+        enum_values: [available, in_use, in_maintenance, out_of_service]
+        required: true
+      - name: status_started_at
+        logical_type: datetime
+        required: true
+      - name: status_ended_at
+        logical_type: datetime
+    relationships:
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+
+  # ---------------------------------------------------------------------------------------
+  # Workforce
+  # ---------------------------------------------------------------------------------------
+  - name: Driver
+    domain: workforce
+    description: A person who drives vehicles.
+    fields:
+      - name: driver_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: full_name
+        logical_type: string
+        classification: pii
+      - name: license_number
+        logical_type: string
+        classification: sensitive_pii
+      - name: license_expiry
+        logical_type: date
+      - name: hired_at
+        logical_type: date
+      - name: is_active
+        logical_type: boolean
+        required: true
+
+  - name: Operator
+    domain: workforce
+    description: A person who operates equipment or oversees operations without necessarily driving.
+    fields:
+      - name: operator_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: full_name
+        logical_type: string
+        classification: pii
+      - name: role_title
+        logical_type: string
+      - name: is_active
+        logical_type: boolean
+        required: true
+
+  - name: Shift
+    domain: workforce
+    description: A scheduled or worked period for a driver or operator.
+    fields:
+      - name: shift_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: driver_id
+        logical_type: string
+        is_business_identifier: true
+      - name: operator_id
+        logical_type: string
+        is_business_identifier: true
+      - name: start_at
+        logical_type: datetime
+        required: true
+      - name: end_at
+        logical_type: datetime
+    relationships:
+      - name: for_driver
+        target_entity: Driver
+        cardinality: many_to_one
+      - name: for_operator
+        target_entity: Operator
+        cardinality: many_to_one
+
+  - name: DriverAssignment
+    domain: workforce
+    description: A driver's assignment to a specific trip.
+    fields:
+      - name: driver_assignment_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: driver_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: trip_id
+        logical_type: string
+        is_business_identifier: true
+      - name: assigned_at
+        logical_type: datetime
+        required: true
+    relationships:
+      - name: for_driver
+        target_entity: Driver
+        cardinality: many_to_one
+        required: true
+      - name: for_trip
+        target_entity: Trip
+        cardinality: many_to_one
+
+  - name: SafetyEvent
+    domain: workforce
+    description: A recorded safety-relevant event (harsh braking, collision, speeding, ...).
+    fields:
+      - name: safety_event_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: driver_id
+        logical_type: string
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        is_business_identifier: true
+      - name: event_type
+        logical_type: enum
+        enum_values: [harsh_braking, harsh_acceleration, speeding, collision, other]
+        required: true
+      - name: occurred_at
+        logical_type: datetime
+        required: true
+      - name: severity
+        logical_type: enum
+        enum_values: [low, medium, high, critical]
+    relationships:
+      - name: for_driver
+        target_entity: Driver
+        cardinality: many_to_one
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+
+  # ---------------------------------------------------------------------------------------
+  # Operations
+  # ---------------------------------------------------------------------------------------
+  - name: Trip
+    domain: operations
+    description: A single vehicle journey, the central entity for delivery-delay prediction.
+    fields:
+      - name: trip_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: driver_id
+        logical_type: string
+        is_business_identifier: true
+      - name: route_id
+        logical_type: string
+        is_business_identifier: true
+      - name: planned_departure_at
+        logical_type: datetime
+        required: true
+      - name: planned_arrival_at
+        logical_type: datetime
+      - name: actual_departure_at
+        logical_type: datetime
+      - name: actual_arrival_at
+        logical_type: datetime
+      - name: planned_distance_km
+        logical_type: float
+        unit: kilometres
+      - name: status
+        logical_type: enum
+        enum_values: [planned, in_progress, completed, cancelled]
+        required: true
+    relationships:
+      - name: uses_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+      - name: assigned_driver
+        target_entity: Driver
+        cardinality: many_to_one
+      - name: follows_route
+        target_entity: Route
+        cardinality: many_to_one
+      - name: has_deliveries
+        target_entity: Delivery
+        cardinality: one_to_many
+
+  - name: Route
+    domain: operations
+    description: A planned path a trip may follow.
+    fields:
+      - name: route_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: name
+        logical_type: string
+      - name: origin_label
+        logical_type: string
+      - name: destination_label
+        logical_type: string
+      - name: planned_distance_km
+        logical_type: float
+        unit: kilometres
+    relationships:
+      - name: has_stops
+        target_entity: RouteStop
+        cardinality: one_to_many
+
+  - name: RouteStop
+    domain: operations
+    description: A single stop along a route.
+    fields:
+      - name: route_stop_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: route_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: sequence_number
+        logical_type: integer
+        required: true
+      - name: location_label
+        logical_type: string
+      - name: planned_arrival_at
+        logical_type: datetime
+    relationships:
+      - name: for_route
+        target_entity: Route
+        cardinality: many_to_one
+        required: true
+
+  - name: Delivery
+    domain: operations
+    description: A single delivery performed as part of a trip.
+    fields:
+      - name: delivery_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: trip_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: order_id
+        logical_type: string
+        is_business_identifier: true
+      - name: planned_at
+        logical_type: datetime
+        required: true
+      - name: delivered_at
+        logical_type: datetime
+      - name: status
+        logical_type: enum
+        enum_values: [pending, delivered, failed, returned]
+        required: true
+    relationships:
+      - name: for_trip
+        target_entity: Trip
+        cardinality: many_to_one
+        required: true
+      - name: for_order
+        target_entity: Order
+        cardinality: many_to_one
+
+  - name: Order
+    domain: operations
+    description: A customer order that results in one or more deliveries.
+    fields:
+      - name: order_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: customer_id
+        logical_type: string
+        is_business_identifier: true
+      - name: placed_at
+        logical_type: datetime
+      - name: requested_delivery_at
+        logical_type: datetime
+    relationships:
+      - name: for_customer
+        target_entity: Customer
+        cardinality: many_to_one
+      - name: has_packages
+        target_entity: Package
+        cardinality: one_to_many
+
+  - name: Package
+    domain: operations
+    description: A physical package belonging to an order.
+    fields:
+      - name: package_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: order_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: weight_kg
+        logical_type: float
+        unit: kilograms
+      - name: description
+        logical_type: string
+    relationships:
+      - name: for_order
+        target_entity: Order
+        cardinality: many_to_one
+        required: true
+
+  - name: Customer
+    domain: operations
+    description: The recipient of an order.
+    fields:
+      - name: customer_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: name
+        logical_type: string
+        classification: pii
+      - name: contact_email
+        logical_type: string
+        classification: sensitive_pii
+
+  # ---------------------------------------------------------------------------------------
+  # Maintenance
+  # ---------------------------------------------------------------------------------------
+  - name: MaintenanceEvent
+    domain: maintenance
+    description: A scheduled or unscheduled maintenance occurrence for a vehicle.
+    fields:
+      - name: maintenance_event_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: work_order_id
+        logical_type: string
+        is_business_identifier: true
+      - name: event_type
+        logical_type: enum
+        enum_values: [scheduled, unscheduled, inspection, recall]
+        required: true
+      - name: started_at
+        logical_type: datetime
+        required: true
+      - name: completed_at
+        logical_type: datetime
+    relationships:
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+      - name: has_work_order
+        target_entity: WorkOrder
+        cardinality: many_to_one
+
+  - name: WorkOrder
+    domain: maintenance
+    description: A unit of maintenance work performed on a vehicle.
+    fields:
+      - name: work_order_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: status
+        logical_type: enum
+        enum_values: [open, in_progress, completed, cancelled]
+        required: true
+      - name: opened_at
+        logical_type: datetime
+        required: true
+      - name: closed_at
+        logical_type: datetime
+    relationships:
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+      - name: has_faults
+        target_entity: Fault
+        cardinality: one_to_many
+
+  - name: Fault
+    domain: maintenance
+    description: A specific fault identified during a work order.
+    fields:
+      - name: fault_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: work_order_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: code
+        logical_type: string
+      - name: description
+        logical_type: string
+      - name: severity
+        logical_type: enum
+        enum_values: [low, medium, high, critical]
+    relationships:
+      - name: for_work_order
+        target_entity: WorkOrder
+        cardinality: many_to_one
+        required: true
+
+  - name: SparePart
+    domain: maintenance
+    description: A stock keeping unit for a spare part.
+    fields:
+      - name: spare_part_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: part_number
+        logical_type: string
+        required: true
+      - name: name
+        logical_type: string
+      - name: unit_cost
+        logical_type: money
+
+  - name: InventoryTransaction
+    domain: maintenance
+    description: A movement of spare-part stock (receipt, issue, adjustment, return).
+    fields:
+      - name: inventory_transaction_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: spare_part_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: work_order_id
+        logical_type: string
+        is_business_identifier: true
+      - name: quantity
+        logical_type: integer
+        required: true
+      - name: transaction_type
+        logical_type: enum
+        enum_values: [receipt, issue, adjustment, return]
+        required: true
+      - name: occurred_at
+        logical_type: datetime
+        required: true
+    relationships:
+      - name: for_spare_part
+        target_entity: SparePart
+        cardinality: many_to_one
+        required: true
+      - name: for_work_order
+        target_entity: WorkOrder
+        cardinality: many_to_one
+
+  - name: Tyre
+    domain: maintenance
+    description: A physical tyre asset, trackable across multiple vehicles over its life.
+    fields:
+      - name: tyre_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: serial_number
+        logical_type: string
+      - name: manufacturer
+        logical_type: string
+      - name: size
+        logical_type: string
+
+  - name: TyreInstallation
+    domain: maintenance
+    description: A period during which a tyre was mounted on a vehicle at a given position.
+    fields:
+      - name: tyre_installation_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: tyre_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: position
+        logical_type: string
+      - name: installed_at
+        logical_type: datetime
+        required: true
+      - name: removed_at
+        logical_type: datetime
+    relationships:
+      - name: for_tyre
+        target_entity: Tyre
+        cardinality: many_to_one
+        required: true
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+
+  # ---------------------------------------------------------------------------------------
+  # Cost and consumption
+  # ---------------------------------------------------------------------------------------
+  - name: FuelEvent
+    domain: cost
+    description: A single refuelling event for a vehicle.
+    fields:
+      - name: fuel_event_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: trip_id
+        logical_type: string
+        is_business_identifier: true
+      - name: quantity_litres
+        logical_type: float
+        unit: litres
+        required: true
+      - name: cost
+        logical_type: money
+      - name: occurred_at
+        logical_type: datetime
+        required: true
+    relationships:
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+      - name: for_trip
+        target_entity: Trip
+        cardinality: many_to_one
+
+  - name: TripExpense
+    domain: cost
+    description: An expense incurred during a trip (toll, parking, fine, ...).
+    fields:
+      - name: trip_expense_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: trip_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: category
+        logical_type: enum
+        enum_values: [toll, parking, fine, other]
+      - name: amount
+        logical_type: money
+        required: true
+      - name: incurred_at
+        logical_type: datetime
+        required: true
+    relationships:
+      - name: for_trip
+        target_entity: Trip
+        cardinality: many_to_one
+        required: true
+
+  - name: MaintenanceCost
+    domain: cost
+    description: A cost incurred against a work order.
+    fields:
+      - name: maintenance_cost_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: work_order_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: amount
+        logical_type: money
+        required: true
+      - name: incurred_at
+        logical_type: datetime
+        required: true
+    relationships:
+      - name: for_work_order
+        target_entity: WorkOrder
+        cardinality: many_to_one
+        required: true
+
+  - name: TollEvent
+    domain: cost
+    description: A single toll charge incurred by a vehicle.
+    fields:
+      - name: toll_event_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: vehicle_id
+        logical_type: string
+        required: true
+        is_business_identifier: true
+      - name: trip_id
+        logical_type: string
+        is_business_identifier: true
+      - name: amount
+        logical_type: money
+        required: true
+      - name: occurred_at
+        logical_type: datetime
+        required: true
+      - name: gantry_label
+        logical_type: string
+    relationships:
+      - name: for_vehicle
+        target_entity: Vehicle
+        cardinality: many_to_one
+        required: true
+      - name: for_trip
+        target_entity: Trip
+        cardinality: many_to_one

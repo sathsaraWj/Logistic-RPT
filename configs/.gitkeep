@@ -1,0 +1,2 @@
+Non-secret configuration files (e.g. feature/ontology defaults) land here starting Phase 6+.
+Runtime secrets never go in this directory — see docs/adr/0005-secret-provider-abstraction.md.

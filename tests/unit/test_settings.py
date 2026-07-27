@@ -1,0 +1,25 @@
+"""Settings validation tests."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from hermes_rpt.common.settings import Environment, Settings
+
+
+def test_defaults_are_usable_for_local_dev() -> None:
+    settings = Settings()
+    assert settings.environment == Environment.LOCAL
+    assert settings.log_level == "INFO"
+    assert str(settings.database_url).startswith("postgresql+asyncpg://")
+
+
+def test_invalid_log_level_fails_fast() -> None:
+    with pytest.raises(ValidationError):
+        Settings(log_level="NOT_A_LEVEL")
+
+
+def test_log_level_is_case_insensitive() -> None:
+    settings = Settings(log_level="debug")
+    assert settings.log_level == "DEBUG"

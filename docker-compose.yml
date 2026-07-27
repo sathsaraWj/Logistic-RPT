@@ -1,0 +1,79 @@
+name: hermes-rpt
+
+services:
+  control-plane-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD: hermes
+      POSTGRES_DB: hermes_control
+    ports:
+      - "5432:5432"
+    volumes:
+      - hermes_control_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_control"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/mlflow.Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - hermes_mlflow_data:/mlflow
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+
+  # Simulated Tenant Alpha / Tenant Beta customer databases — separate Postgres instances (not
+  # just separate databases on one instance), each with its own user/password, so "customer
+  # plane vs control plane" and "Tenant A cannot obtain Tenant B's engine or session" both stay
+  # true even in local dev (docs/ARCHITECTURE.md §1). Used by Phase 4's connector integration
+  # tests and the Phase 17 end-to-end demo. Deliberately different schemas — see
+  # docker/postgres-fixtures/{alpha,beta}/init.sql.
+  tenant-alpha-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: alpha_app
+      POSTGRES_PASSWORD: alpha-dev-password
+      POSTGRES_DB: tenant_alpha
+    ports:
+      - "5433:5432"
+    volumes:
+      - hermes_tenant_alpha_data:/var/lib/postgresql/data
+      - ./docker/postgres-fixtures/alpha:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alpha_app -d tenant_alpha"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tenant-beta-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: beta_app
+      POSTGRES_PASSWORD: beta-dev-password
+      POSTGRES_DB: tenant_beta
+    ports:
+      - "5434:5432"
+    volumes:
+      - hermes_tenant_beta_data:/var/lib/postgresql/data
+      - ./docker/postgres-fixtures/beta:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U beta_app -d tenant_beta"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  hermes_control_db_data:
+  hermes_mlflow_data:
+  hermes_tenant_alpha_data:
+  hermes_tenant_beta_data:

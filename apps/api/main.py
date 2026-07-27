@@ -1,0 +1,108 @@
+"""Hermes-RPT public/internal HTTP API entry point.
+
+Run locally with: `uv run uvicorn apps.api.main:app --reload`
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+
+from apps.api.exception_handlers import register_exception_handlers
+from apps.api.routers import connections, mappings, memberships, schema_discovery
+from hermes_rpt import __version__
+from hermes_rpt.common.correlation import CorrelationIdMiddleware
+from hermes_rpt.common.db import get_sessionmaker
+from hermes_rpt.common.logging import configure_logging, get_logger
+from hermes_rpt.common.settings import get_settings
+
+_START_TIME = time.monotonic()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    configure_logging(settings)
+    logger = get_logger(__name__)
+    logger.info("startup", environment=settings.environment, service=settings.service_name)
+    yield
+    logger.info("shutdown")
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = FastAPI(
+        title="Hermes-RPT API",
+        version=__version__,
+        lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CorrelationIdMiddleware,
+        request_id_header=settings.request_id_header,
+        correlation_id_header=settings.correlation_id_header,
+    )
+
+    if settings.cors_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_allowed_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # Exception handlers can't use FastAPI's Depends()/dependency_overrides machinery, so the
+    # sessionmaker they use for best-effort audit writes is threaded through app.state instead
+    # — tests override this the same way they'd override a dependency. See
+    # apps/api/exception_handlers.py.
+    app.state.db_sessionmaker = get_sessionmaker()
+
+    register_exception_handlers(app)
+    app.include_router(memberships.router)
+    app.include_router(connections.router)
+    app.include_router(schema_discovery.router)
+    app.include_router(mappings.router)
+
+    @app.get("/health/live", tags=["health"])
+    async def health_live() -> dict[str, str]:
+        """Liveness probe: the process is up and able to serve requests at all.
+        Deliberately does not touch the database — see /health/ready for that."""
+        return {"status": "ok"}
+
+    @app.get("/health/ready", tags=["health"])
+    async def health_ready() -> dict[str, Any]:
+        """Readiness probe: also confirms the control-plane database is reachable with a
+        cheap `SELECT 1`. Never touches a customer/tenant database — those are per-tenant and
+        have no meaning for a platform-wide readiness check (docs/ARCHITECTURE.md §1)."""
+        checks: dict[str, str] = {}
+        try:
+            session_factory = get_sessionmaker()
+            async with session_factory() as session:
+                await session.execute(text("SELECT 1"))
+            checks["control_plane_database"] = "ok"
+        except Exception:  # noqa: BLE001 - readiness probe: any failure means "not ready"
+            checks["control_plane_database"] = "unreachable"
+            return {"status": "degraded", "checks": checks}
+        return {"status": "ok", "checks": checks}
+
+    @app.get("/version", tags=["health"])
+    async def version() -> dict[str, Any]:
+        settings = get_settings()
+        return {
+            "service": settings.service_name,
+            "version": __version__,
+            "environment": settings.environment,
+            "uptime_seconds": round(time.monotonic() - _START_TIME, 3),
+        }
+
+    return app
+
+
+app = create_app()
