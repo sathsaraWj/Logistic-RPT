@@ -34,7 +34,8 @@ async def test_sets_the_session_variable_on_postgresql() -> None:
 
     session.execute.assert_awaited_once()
     (statement, params), _kwargs = session.execute.call_args
-    assert "SET LOCAL app.current_tenant_id" in str(statement)
+    assert "set_config" in str(statement)
+    assert "app.current_tenant_id" in str(statement)
     assert params == {"tenant_id": str(tenant_id)}
 
 
