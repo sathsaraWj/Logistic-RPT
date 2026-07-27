@@ -22,7 +22,11 @@ from hermes_rpt.features.resolver import TargetMappingUnavailableError
 from hermes_rpt.features.service import TargetRowNotFoundError
 from hermes_rpt.inference.model_loading import UnsupportedModelFamilyError
 from hermes_rpt.inference.resilience import CircuitOpenError, TimeoutExceededError
-from hermes_rpt.inference.service import NoProductionModelError, PredictionResponse
+from hermes_rpt.inference.service import (
+    NoProductionModelError,
+    PredictionResponse,
+    PredictionTaskNotConfiguredError,
+)
 from hermes_rpt.tenants.context import TenantContext
 
 router = APIRouter(prefix="/v1/predictions", tags=["predictions"])
@@ -97,6 +101,8 @@ async def predict_delivery_delay(
     except TargetMappingUnavailableError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except NoProductionModelError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except PredictionTaskNotConfiguredError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except UnsupportedModelFamilyError as exc:
         raise HTTPException(

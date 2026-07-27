@@ -495,18 +495,101 @@ than accepting an existing one, same limitation as Phase 10's `baselines` comman
 
 ## Phase 13 — Inference API
 
-- [ ] `POST /v1/predictions/delivery-delay` per the flow in prompts.txt
-- [ ] No raw SQL/passwords/connection strings/other-tenant identifiers/unsupported causal
-      claims in responses
-- [ ] Idempotency, timeout/retry/circuit-breaker interfaces
-- [ ] Security, integration, load, contract tests
+- [x] `POST /v1/predictions/delivery-delay` per the 14-step flow in prompts.txt
+      (`hermes_rpt.inference.service.PredictionService.predict`,
+      `apps/api/routers/predictions.py`) — every step delegated to machinery from an earlier
+      phase (Phase 3 auth, Phase 8 feature extraction, Phase 10 registry/models), this service is
+      coordination, not new business logic. Deliberately scoped to serve Phase 10 baseline
+      models only, not Hermes-RPT-0.1 — `ModelLoader.load()` fails closed with
+      `UnsupportedModelFamilyError` for a Hermes-RPT `ModelVersion` rather than mis-serving one
+      (see docs/INFERENCE_API.md §3 for the reasoning).
+- [x] No raw SQL/passwords/connection strings/other-tenant identifiers/unsupported causal
+      claims in responses — structural, not just convention (docs/INFERENCE_API.md §4): closed
+      response schemas, tenant-scoped repository calls throughout, explanations name a feature +
+      correlational direction only, and every domain exception is mapped to a short safe message
+      before reaching the client. Verified directly against real response bodies by
+      `tests/model/test_predictions_api.py`'s leakage tests, not just by code inspection.
+- [x] Idempotency (`PredictionRequest.idempotency_key`, unique per tenant — a Phase 2 column
+      used for the first time here) and timeout/retry/circuit-breaker interfaces
+      (`hermes_rpt.inference.resilience` — generic, PEP 695 generic primitives, not
+      inference-specific; wrapped around `ModelLoader`'s MLflow artifact fetch, the one genuinely
+      external dependency in the flow).
+- [x] Security, integration, load, contract tests —
+      `tests/security/test_predictions_api_auth.py` (auth/scope checks, no model needed),
+      `tests/model/test_predictions_api.py` (gated behind `ml`: full flow against a real trained
+      + `PRODUCTION`-promoted baseline and real synthetic data; response contract; no
+      SQL/secret/connection-string/other-tenant leakage; idempotency; a sequential
+      repeated-request smoke test — see note below on why this isn't concurrent),
+      `tests/unit/test_inference_resilience.py` (circuit breaker / retry / timeout in isolation).
+- [x] `docs/INFERENCE_API.md`
+
+Two real bugs caught while writing the integration test against real trained/promoted models
+(not by inspection):
+1. `apps/api/deps.py`'s `get_prediction_service` called the `@lru_cache`d `get_model_loader()`
+   directly as a plain function rather than through FastAPI's `Depends()` — invisible to
+   `app.dependency_overrides`, so tests (and any future caller needing a different `ModelLoader`)
+   could never actually swap it. Fixed by adding `ModelLoaderDep` and injecting it as a real
+   dependency.
+2. `ModelVersion.stage`/`TenantModelAdapter.stage` were plain `String(20)` columns, not a
+   converting `Enum(ModelStage)` — since `ModelStage` is a `StrEnum`, most comparisons kept
+   silently working against a bare `str` after certain DB round-trips (autoflush/RETURNING
+   population during a large multi-entity session, as happens in the real provisioning +
+   training pipeline but not in smaller isolated tests), until
+   `ModelRegistryService.transition_stage`'s `current.value` access hit a plain `str` and raised
+   `AttributeError`. Fixed with `Enum(ModelStage, native_enum=False, ...)` (no DDL/migration
+   change — still VARCHAR on disk); the same plain-`String`-for-an-enum pattern exists elsewhere
+   in the schema (`RoleName`, `AuditOutcome`, `DatabaseEngine`, ...) and is flagged as follow-up
+   for Phase 16's security/consistency review rather than fixed everywhere here.
+
+The load test is sequential, not concurrent: this fixture's single shared `AsyncSession` (the
+same one-session-per-test pattern every other test file in this project uses) is not safe for
+concurrent access, so a real concurrent-request test would need a differently-shaped fixture
+(e.g. a running server + a real connection pool) — noted as a documented limitation, not silently
+glossed over, in both the test's docstring and docs/INFERENCE_API.md.
 
 ## Phase 14 — Model registry and per-tenant adaptation
 
-- [ ] Shared base + tenant adapters; aliases; approval workflow; rollback; deactivation;
-      compatibility checks
-- [ ] Tenant-owned adapters, tenant-specific checkpoint paths, tenant-isolated adapter lookup
-- [ ] Alpha/Beta adapter experiment; rollback tested
+- [x] Shared base + tenant adapters; aliases; approval workflow; rollback; deactivation;
+      compatibility checks — `hermes_rpt.registry.models.ModelAlias` (new table + RLS migration
+      `995d4a06ea5c`) is an atomically-repointable named pointer to a `(ModelVersion,
+      TenantModelAdapter | None)` pair, alongside (not replacing) Phase 10's `ModelStage`;
+      `ModelRegistryService.set_alias`/`rollback_alias` (rollback is repointing, recorded under a
+      distinct audit action), `.register_adapter_candidate`/`.transition_adapter_stage`/
+      `.deactivate_model_version`/`.deactivate_adapter`, `IncompatibleAdapterError` (checked at
+      both adapter-registration and alias-pointing time). "Promotion requires authorised
+      approval": promoting to `STAGING`/`PRODUCTION` or pointing/rolling back an alias now
+      requires `ScopeName.MODEL_PROMOTE` when a `TenantContext` is supplied (a `None`
+      `tenant_context` — the pre-Phase-14 CLI/script convention — remains a trusted-system-caller
+      bypass); archiving/deactivating never requires the scope.
+- [x] Tenant-owned adapters, tenant-specific checkpoint paths, tenant-isolated adapter lookup —
+      `hermes_rpt.models.transformer.adapter.HermesRPTAdapter` (Houlsby-style residual bottleneck
+      + its own small head) / `HermesRPTWithAdapter` (frozen shared backbone, `requires_grad =
+      False` on every backbone parameter *and* a `torch.no_grad()` forward pass, belt and
+      suspenders — verified by a dedicated regression test that trains for several steps and
+      asserts every backbone tensor is bit-identical afterward).
+      `hermes_rpt.models.transformer.adapter_training.TenantAdapterTrainingService` writes
+      checkpoints to `checkpoint_dir/<tenant_id>/adapter_<size>.pt` and serializes only the
+      adapter's own `state_dict()` — never the backbone's, so "shared models must never contain
+      tenant-private adapter weights" holds structurally. `register_adapter_candidate` requires a
+      real `TenantContext` (not optional, unlike shared-model registration) — "training jobs must
+      include trusted tenant context."
+- [x] Alpha/Beta adapter experiment; rollback tested — `apps/trainer/main.py`'s new `adapt`
+      command (`make adapt-hermes-rpt`): trains one shared Hermes-RPT-0.1 (Tiny) backbone, then a
+      private adapter per tenant on top of it, and **proves tenant isolation against the real
+      governance layer, not just a repository unit test** — Alpha's `TenantContext` attempting to
+      read or alias Beta's adapter both fail, asserted (the run itself fails loudly if either
+      isolation property doesn't hold). Ran successfully end to end; comparison table (shared
+      base alone vs. each tenant's adapted result) printed and reviewed. Rollback is tested via
+      `test_rollback_repoints_the_alias_and_is_distinguishable_in_the_audit_trail` (repoints an
+      alias back to a prior model version and confirms both the resolved target and the audit
+      action name).
+- [x] `docs/MODEL_ADAPTATION.md`
+
+New tests: `tests/model/test_model_governance.py` (17 tests — compatibility, approval gate,
+aliases/rollback, deactivation), `tests/model/test_adapter_shapes.py` (6 tests — shape,
+gradient-isolation, numerical stability). Full `tests/model` suite (110 tests) and
+`tests/unit`+`tests/security` (312 tests) re-run clean after these changes; ruff/mypy/bandit all
+clean across `src apps scripts tests`.
 
 ## Phase 15 — Monitoring and drift detection
 

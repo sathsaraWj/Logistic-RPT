@@ -58,6 +58,16 @@ class NoProductionModelError(Exception):
         super().__init__(f"No PRODUCTION model version is available for task {task_key!r}")
 
 
+class PredictionTaskNotConfiguredError(Exception):
+    """Raised when no `PredictionTaskDefinition` row exists for the delivery-delay-risk task —
+    a deployment/setup gap (a missing migration/seed step), not something a caller did wrong.
+    Mapped to a 503 by the router, same family as `NoProductionModelError`: "this endpoint
+    isn't ready yet," never a raw 500 with an internal message."""
+
+    def __init__(self, task_key: str) -> None:
+        super().__init__(f"No PredictionTaskDefinition registered for {task_key!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class PredictionResponse:
     prediction_id: uuid.UUID
@@ -106,10 +116,7 @@ class PredictionService:
             DELIVERY_DELAY_RISK_CONTRACT.task_key
         )
         if task_definition is None:
-            raise ValueError(
-                f"No PredictionTaskDefinition registered for "
-                f"{DELIVERY_DELAY_RISK_CONTRACT.task_key!r}"
-            )
+            raise PredictionTaskNotConfiguredError(DELIVERY_DELAY_RISK_CONTRACT.task_key)
 
         request = await self._requests.add(
             PredictionRequest(

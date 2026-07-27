@@ -18,7 +18,7 @@ from sqlalchemy import and_, or_, select
 
 from hermes_rpt.common.repository import BaseRepository, TenantMismatchError, TenantScopedRepository
 from hermes_rpt.registry.enums import ModelStage
-from hermes_rpt.registry.models import ModelVersion, TenantModelAdapter
+from hermes_rpt.registry.models import ModelAlias, ModelVersion, TenantModelAdapter
 from hermes_rpt.tenants.context import TenantContext
 
 
@@ -91,3 +91,61 @@ class ModelVersionRepository(BaseRepository[ModelVersion]):
 
 class TenantModelAdapterRepository(TenantScopedRepository[TenantModelAdapter]):
     model = TenantModelAdapter
+
+    async def get_active_for_base_model(
+        self, base_model_version_id: uuid.UUID, *, tenant_context: TenantContext
+    ) -> TenantModelAdapter | None:
+        """The one adapter a Phase 14 serving path would combine with a shared base model for
+        this tenant: `PRODUCTION`-staged, active, and — since this is `TenantScopedRepository` —
+        already structurally impossible to be another tenant's row (Phase 14's "Tenant A cannot
+        load Tenant B's adapter")."""
+
+        stmt = select(TenantModelAdapter).where(
+            and_(
+                TenantModelAdapter.base_model_version_id == base_model_version_id,
+                TenantModelAdapter.tenant_id == tenant_context.tenant_id,
+                TenantModelAdapter.stage == ModelStage.PRODUCTION,
+                TenantModelAdapter.is_active.is_(True),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+
+class ModelAliasRepository(BaseRepository[ModelAlias]):
+    model = ModelAlias
+
+    async def find(
+        self, *, task_definition_id: uuid.UUID, alias_name: str, tenant_id: uuid.UUID | None
+    ) -> ModelAlias | None:
+        tenant_clause = (
+            ModelAlias.tenant_id == tenant_id
+            if tenant_id is not None
+            else ModelAlias.tenant_id.is_(None)
+        )
+        stmt = select(ModelAlias).where(
+            and_(
+                ModelAlias.task_definition_id == task_definition_id,
+                ModelAlias.alias_name == alias_name,
+                tenant_clause,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def resolve_for_tenant(
+        self, *, task_definition_id: uuid.UUID, alias_name: str, tenant_context: TenantContext
+    ) -> ModelAlias | None:
+        """A tenant-private alias wins over the shared one of the same name — same precedence
+        rule as `ModelVersionRepository.get_production_model`."""
+
+        tenant_specific = await self.find(
+            task_definition_id=task_definition_id,
+            alias_name=alias_name,
+            tenant_id=tenant_context.tenant_id,
+        )
+        if tenant_specific is not None:
+            return tenant_specific
+        return await self.find(
+            task_definition_id=task_definition_id, alias_name=alias_name, tenant_id=None
+        )

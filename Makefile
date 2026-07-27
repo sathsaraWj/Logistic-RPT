@@ -1,6 +1,6 @@
 .PHONY: install lint format typecheck test test-unit test-integration security-check \
         docs-check ci up down logs migrate run-api run-worker clean build-synthetic-dataset \
-        train-baselines train-hermes-rpt pretrain-hermes-rpt
+        train-baselines train-hermes-rpt pretrain-hermes-rpt adapt-hermes-rpt
 
 UV ?= uv
 
@@ -76,3 +76,6 @@ train-hermes-rpt: ## Train baselines + Hermes-RPT-0.1 (Tiny) and compare; requir
 
 pretrain-hermes-rpt: ## Pretrain + fine-tune Hermes-RPT-0.1 (Tiny) vs. scratch, plus baselines; requires `make install-ml`.
 	$(UV) run python -m apps.trainer.main pretrain
+
+adapt-hermes-rpt: ## Train a shared Hermes-RPT-0.1 backbone + per-tenant private adapters (Alpha, Beta) and compare; requires `make install-ml`.
+	$(UV) run python -m apps.trainer.main adapt

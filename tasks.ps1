@@ -40,5 +40,6 @@ switch ($Task) {
     "train-baselines"  { uv run python -m apps.trainer.main baselines }
     "train-hermes-rpt" { uv run python -m apps.trainer.main hermes-rpt }
     "pretrain-hermes-rpt" { uv run python -m apps.trainer.main pretrain }
+    "adapt-hermes-rpt" { uv run python -m apps.trainer.main adapt }
     default       { throw "Unknown task '$Task'. See tasks.ps1 for the list." }
 }
