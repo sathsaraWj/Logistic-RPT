@@ -7,9 +7,12 @@ requirement 5). `require_scopes`/`require_roles`/`require_human`/`require_servic
 dependency *factories*: call them at route-declaration time with the requirement, and use the
 returned callable as a `Depends(...)`.
 
-None of these do any I/O of their own (verification is in-process HS256, no network call), so
-they are plain sync callables rather than `async def` — FastAPI runs sync dependencies directly
-without the overhead of a coroutine wrapper.
+Most of these do no I/O of their own (verification is in-process HS256, no network call) and
+stay plain sync callables — `get_tenant_context` is the one exception, since it binds the
+resolved tenant into the request's database session for Row-Level Security (see its docstring).
+
+`require_scopes`/`require_roles`/`require_human`/`require_service` take the already-resolved
+`TenantContext` as input, so they stay sync regardless.
 """
 
 from __future__ import annotations
@@ -20,12 +23,15 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from hermes_rpt.auth.claims import TokenClaims
 from hermes_rpt.auth.enums import PrincipalType, ScopeName
 from hermes_rpt.auth.errors import AuthenticationError, AuthorizationError
 from hermes_rpt.auth.verifier import LocalDevTokenVerifier, TokenVerifier
+from hermes_rpt.common.db import get_session
 from hermes_rpt.common.settings import Settings, get_settings
+from hermes_rpt.common.tenant_session import bind_tenant_for_row_level_security
 from hermes_rpt.tenants.context import TenantContext
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -55,15 +61,23 @@ def _correlation_id_from_request(request: Request) -> str | None:
     return getattr(request.state, "correlation_id", None)
 
 
-def get_tenant_context(
+async def get_tenant_context(
     request: Request,
     claims: Annotated[TokenClaims, Depends(get_token_claims)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TenantContext:
     """The one place a `TenantContext` is built from a real request. `claims.tenant_id` is the
     *only* source of tenant identity here — any `X-Tenant-Id`-style header the client sent is
-    never read (Phase 3 requirement 5)."""
+    never read (Phase 3 requirement 5).
 
-    return TenantContext(
+    Also binds the tenant into this request's database session for PostgreSQL Row-Level
+    Security (`bind_tenant_for_row_level_security` — a real, load-bearing call, not a formality:
+    without it, every RLS-protected table's `FORCE ROW LEVEL SECURITY` policy sees
+    `app.current_tenant_id` as unset and denies all access, including to the requesting
+    tenant's own rows. `Depends(get_session)` is cached per-request, so this binds the exact
+    same session instance every downstream repository call in this request will use."""
+
+    tenant_context = TenantContext(
         tenant_id=claims.tenant_id,
         principal_id=claims.sub,
         roles=claims.roles,
@@ -71,6 +85,8 @@ def get_tenant_context(
         correlation_id=_correlation_id_from_request(request),
         principal_type=claims.principal_type.value,
     )
+    await bind_tenant_for_row_level_security(session, tenant_context)
+    return tenant_context
 
 
 TenantContextDep = Annotated[TenantContext, Depends(get_tenant_context)]
