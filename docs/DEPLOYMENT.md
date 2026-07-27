@@ -1,7 +1,7 @@
 # Deployment (GCP / Cloud Run)
 
 Status: a demo/staging-style deployment, not a production one — see [README.md](../README.md)'s
-"Not production ready" and §4 below before pointing real customer traffic at this.
+"Not production ready" and §5 below before pointing real customer traffic at this.
 
 ## 1. What's deployed
 
@@ -11,14 +11,120 @@ Status: a demo/staging-style deployment, not a production one — see [README.md
 | Cloud Run service | `hermes-rpt-api` (region `us-central1`) | Runs `apps/api` (the FastAPI control-plane service). Two containers per instance: `api` and a `cloud-sql-proxy` sidecar. |
 | Cloud SQL | `hermes-rpt-control-db` (Postgres 16, `db-g1-small`) | Control-plane database only — same "two planes" invariant as local dev (docs/ARCHITECTURE.md). No customer/tenant data ever lives here. |
 | Artifact Registry | `hermes-rpt` (Docker, `us-central1`) | Holds `api` images. |
-| Secret Manager | `hermes-rpt-jwt-secret`, `hermes-rpt-db-password`, `hermes-rpt-database-url` | See §3. |
-| Service accounts | `hermes-rpt-api-runtime`, `github-deployer` | Runtime identity vs. CI/deploy identity — kept separate, least privilege each (§2). |
-| Workload Identity Pool | `github-pool` / provider `github-provider` | Lets GitHub Actions authenticate to GCP with no stored key (§2). |
+| Secret Manager | `hermes-rpt-jwt-secret`, `hermes-rpt-db-password`, `hermes-rpt-database-url` | See §4. |
+| Service accounts | `hermes-rpt-api-runtime`, `github-deployer` | Runtime identity vs. CI/deploy identity — kept separate, least privilege each (§3). |
+| Workload Identity Pool | `github-pool` / provider `github-provider` | Lets GitHub Actions authenticate to GCP with no stored key (§3). |
 
-Not deployed (out of scope for this pass — see §4): `apps/worker`, MLflow, the synthetic Alpha/Beta
+Not deployed (out of scope for this pass — see §5): `apps/worker`, MLflow, the synthetic Alpha/Beta
 tenant databases from `docker-compose.yml`.
 
-## 2. Identity and access
+## 2. How to use it
+
+There is deliberately no self-service "create a tenant" endpoint (`hermes_rpt.tenants` has no
+`POST /tenants` route) — a tenant existing at all is treated as a trusted, out-of-band setup
+step, not something a caller does over the API. So using this deployment for the first time
+means: seed one tenant/user/membership directly against the database (once), then everything
+else goes through the API normally.
+
+**1. Get a Cloud SQL connection open** (any of these steps that touch the database need one):
+
+```bash
+gcloud auth application-default login   # if you haven't already
+cloud-sql-proxy --port=15432 hermes-rpt-demo:us-central1:hermes-rpt-control-db &
+```
+
+**2. Seed a tenant, a user, and a `tenant_admin` membership** (one-time; safe to re-run —
+it's idempotent by slug/email):
+
+```bash
+DB_PASSWORD=$(gcloud secrets versions access latest --secret=hermes-rpt-db-password --project=hermes-rpt-demo)
+export DATABASE_URL="postgresql+asyncpg://hermes:${DB_PASSWORD}@127.0.0.1:15432/hermes_control"
+
+uv run python -c "
+import asyncio
+from hermes_rpt.common.db import get_sessionmaker
+from hermes_rpt.common.tenant_session import bind_tenant_for_row_level_security
+from hermes_rpt.tenants.repository import TenantRepository, UserRepository
+from hermes_rpt.tenants.service import MembershipService
+from hermes_rpt.tenants.enums import RoleName
+from hermes_rpt.tenants.context import TenantContext
+from hermes_rpt.tenants.models import Tenant, User
+
+async def main():
+    sf = get_sessionmaker()
+    async with sf() as session:
+        tenants = TenantRepository(session)
+        tenant = await tenants.get_by_slug('demo') or await tenants.add(Tenant(name='Demo Tenant', slug='demo'))
+        users = UserRepository(session)
+        user = await users.get_by_email('demo@hermes-rpt.local') or await users.add(
+            User(email='demo@hermes-rpt.local', display_name='Demo Admin')
+        )
+        await session.commit()
+
+        ctx = TenantContext(tenant_id=tenant.id, principal_id=user.id)
+        await bind_tenant_for_row_level_security(session, ctx)  # required — RLS is FORCE-enabled
+        svc = MembershipService(session)
+        memberships = await svc.list_memberships(tenant_context=ctx)
+        if not any(m.user_id == user.id and m.role.name == RoleName.TENANT_ADMIN for m in memberships):
+            await svc.add_membership(user_id=user.id, role=RoleName.TENANT_ADMIN, tenant_context=ctx)
+            await session.commit()
+        print(f'TENANT_ID={tenant.id}')
+        print(f'USER_ID={user.id}')
+
+asyncio.run(main())
+"
+```
+
+Don't skip `bind_tenant_for_row_level_security` here — every RLS-protected table has `FORCE ROW
+LEVEL SECURITY`, so an insert without it set fails with `InsufficientPrivilegeError`, even for
+the row's own tenant (see §5's note on this bug and the fix history in `git log
+src/hermes_rpt/common/tenant_session.py`).
+
+**3. Issue yourself a token** (this deployment's only auth path — no real login page; see §5):
+
+```bash
+export JWT_SECRET_KEY=$(gcloud secrets versions access latest --secret=hermes-rpt-jwt-secret --project=hermes-rpt-demo)
+export ENVIRONMENT=local   # required — dev-token issuance refuses to run in any other environment
+
+TOKEN=$(uv run python -c "
+from hermes_rpt.auth.dev_tokens import issue_dev_token
+from hermes_rpt.common.settings import get_settings
+import uuid
+print(issue_dev_token(
+    settings=get_settings(),
+    tenant_id=uuid.UUID('<TENANT_ID from step 2>'),
+    principal_id=uuid.UUID('<USER_ID from step 2>'),
+    roles=['tenant_admin'],
+    scopes=['tenant:read', 'tenant:admin', 'connection:manage', 'mapping:manage', 'model:train', 'model:promote'],
+))
+")
+```
+
+Pick `scopes` to match what you actually want to call — see `hermes_rpt.auth.enums.ScopeName`
+for the full list; a route's required scope(s) are visible on its `require_scopes(...)`
+dependency in `apps/api/routers/*.py`.
+
+**4. Call the API:**
+
+```bash
+API=https://hermes-rpt-api-341508818275.us-central1.run.app
+
+curl -H "Authorization: Bearer $TOKEN" "$API/v1/memberships"
+curl -H "Authorization: Bearer $TOKEN" "$API/version"
+```
+
+Verified working end to end against the live deployment: the membership seeded in step 2 comes
+back from `GET /v1/memberships` with a real `200`.
+
+**What's actually usable this way right now:** tenant/membership management
+(`/v1/memberships`), model registry/governance (register/promote/alias model versions — no
+router yet, service-layer only, see [MODEL_ADAPTATION.md](MODEL_ADAPTATION.md)), and the
+health/version endpoints. **What isn't, yet:** `/v1/connections`, `/v1/schema-discovery`,
+`/v1/mappings`, `/v1/features`, and `/v1/predictions/*` all need a real tenant customer database
+connected, which this deployment doesn't have (§5) — calling them will mostly 404/409/503 rather
+than do anything useful.
+
+## 3. Identity and access
 
 Two separate service accounts, each scoped to only what it needs:
 
@@ -45,14 +151,14 @@ the pool/provider names (which aren't secret; they're plain resource names, not 
 This means **`.github/workflows/deploy.yml` needs zero GitHub repository secrets** to function —
 nothing to add in Settings → Secrets.
 
-## 3. Secrets
+## 4. Secrets
 
 Three Secret Manager secrets, injected into the Cloud Run revision as env vars
 (`docker/cloudrun-service.yaml`), never baked into the image or committed anywhere:
 
 * `hermes-rpt-jwt-secret` → `JWT_SECRET_KEY` — a random 48-byte token, generated once at
   bootstrap. Real secret, not the insecure dev default (`Settings._reject_insecure_jwt_secret`
-  would refuse to boot with the default outside `local`/`ci` anyway — see §4 on why
+  would refuse to boot with the default outside `local`/`ci` anyway — see §5 on why
   `ENVIRONMENT=local` is still set despite that).
 * `hermes-rpt-db-password` → the `hermes` Cloud SQL user's password. Used directly by CI to
   build the migration DSN; not injected into the Cloud Run container on its own.
@@ -65,7 +171,7 @@ Three Secret Manager secrets, injected into the Cloud Run revision as env vars
     *native* `--add-cloudsql-instances` connector, kept for reference / a future switch back —
     see the "Known issues" note below for why the sidecar is used instead right now.
 
-## 4. Known, deliberate gaps — read before treating this as "production"
+## 5. Known, deliberate gaps — read before treating this as "production"
 
 * **Auth**: `ENVIRONMENT=local` is set on the deployed service, on purpose — confirmed with the
   requester before deploying. This codebase's only working token issuance path is
@@ -88,7 +194,7 @@ Three Secret Manager secrets, injected into the Cloud Run revision as env vars
   `ENVIRONMENT` should ever say `staging` or `production`.
 * **Secrets for tenant connections**: `hermes_rpt.secrets.provider.get_secret_provider()` still
   hardcodes `LocalDevSecretProvider` (in-memory, lost on restart) regardless of environment —
-  unrelated to the three infrastructure secrets in §3, which are handled at the Cloud Run/Secret
+  unrelated to the three infrastructure secrets in §4, which are handled at the Cloud Run/Secret
   Manager level instead. Registering a real customer connection through this deployment would
   store that customer's secret in-process memory, gone on the next cold start. Wiring
   `GoogleSecretManagerSecretProvider` for real (currently a stub — see
@@ -99,6 +205,17 @@ Three Secret Manager secrets, injected into the Cloud Run revision as env vars
   `/v1/connections`/`/v1/schema-discovery` will work but have nothing real to discover against.
   What *is* fully live: tenant/membership management, auth, model registry/governance endpoints,
   and the health/version endpoints.
+* **Fixed during this deployment, not a live gap, but worth knowing about**: getting a real
+  authenticated write to actually work against live Postgres surfaced two bugs invisible to the
+  SQLite-backed test suite — (1) `bind_tenant_for_row_level_security` was correctly implemented
+  but never called anywhere in `apps/api`'s request pipeline, so every RLS-protected table
+  denied all access, including to the requesting tenant's own rows; (2) once wired in, its `SET
+  LOCAL app.current_tenant_id = $1` turned out to be invalid syntax under asyncpg's
+  prepared-statement protocol (PostgreSQL's `SET` doesn't accept a placeholder there), fixed by
+  switching to `set_config(...)`. Both are fixed as of this doc; see `git log --oneline --
+  src/hermes_rpt/auth/dependencies.py src/hermes_rpt/common/tenant_session.py` for the exact
+  commits, and `tests/integration/test_row_level_security.py` (now passing against the live
+  instance) for the regression coverage.
 * **Known issue — Cloud Run's native Cloud SQL connector**: `--add-cloudsql-instances` (and the
   equivalent YAML) auto-injects a managed `cloud-sql-proxy` sidecar with its own startup TCP
   probe against `127.0.0.1:5432`. In this project, that probe consistently timed out
@@ -111,27 +228,27 @@ Three Secret Manager secrets, injected into the Cloud Run revision as env vars
   version `2`) would remove a moving part.
 * **Cost**: Cloud SQL (`db-g1-small`, always-on) is the dominant ongoing cost — Cloud Run scales
   to zero (`--min-instances=0`) when idle, Cloud SQL does not. Tear down with `gcloud sql
-  instances delete hermes-rpt-control-db` (or the whole project — see §6) if this is only needed
+  instances delete hermes-rpt-control-db` (or the whole project — see §8) if this is only needed
   for a demo window.
 
-## 5. CI/CD — `.github/workflows/deploy.yml`
+## 6. CI/CD — `.github/workflows/deploy.yml`
 
 Triggers on push to `main` (path-filtered to `src/`, `apps/`, `migrations/`, `docker/`,
 `pyproject.toml`, `uv.lock`) or manual dispatch. Two jobs:
 
 1. `test` — the same lint/format/typecheck/unit-test/bandit gate as `ci.yml`. `deploy` will not
    run if this fails.
-2. `deploy` — authenticates via Workload Identity Federation (§2), builds `docker/api.Dockerfile`,
+2. `deploy` — authenticates via Workload Identity Federation (§3), builds `docker/api.Dockerfile`,
    pushes to Artifact Registry tagged with the commit SHA (and `:latest`), renders
    `docker/cloudrun-service.yaml` with the real image URI, deploys via `gcloud run services
    replace`, runs `alembic upgrade head` against Cloud SQL through a short-lived
    `cloud-sql-proxy` it downloads for the job, then curls `/health/ready` to confirm the new
    revision actually came up before declaring success.
 
-Needs zero GitHub repository secrets (§2). It does need `permissions: id-token: write`, which is
+Needs zero GitHub repository secrets (§3). It does need `permissions: id-token: write`, which is
 already set in the workflow.
 
-## 6. Manual bootstrap (already done for `hermes-rpt-demo`; reference for a fresh project)
+## 7. Manual bootstrap (already done for `hermes-rpt-demo`; reference for a fresh project)
 
 ```bash
 gcloud projects create <PROJECT_ID> --name="..."
@@ -147,7 +264,7 @@ gcloud sql databases create hermes_control --instance=hermes-rpt-control-db --pr
 gcloud sql users create hermes --instance=hermes-rpt-control-db --password=<GENERATED> --project=<PROJECT_ID>
 
 # Secrets, service accounts, IAM bindings, WIF pool/provider: see the exact commands this was
-# bootstrapped with in git history around the commit that added this file, or re-derive from §2/§3.
+# bootstrapped with in git history around the commit that added this file, or re-derive from §3/§4.
 
 # First deploy:
 gcloud builds submit --config=<a docker-build-and-push cloudbuild config> .
@@ -155,7 +272,7 @@ sed "s|IMAGE_TAG_PLACEHOLDER|<IMAGE_URI>|" docker/cloudrun-service.yaml | \
   gcloud run services replace /dev/stdin --region=us-central1 --project=<PROJECT_ID>
 ```
 
-## 7. Tearing down
+## 8. Tearing down
 
 ```bash
 gcloud run services delete hermes-rpt-api --region=us-central1 --project=hermes-rpt-demo
