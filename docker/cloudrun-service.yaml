@@ -1,0 +1,73 @@
+# Cloud Run service manifest for apps/api (Phase 14 addendum: GCP deployment).
+#
+# Deployed via `gcloud run services replace` — see docs/DEPLOYMENT.md and
+# .github/workflows/deploy.yml. IMAGE_TAG_PLACEHOLDER is substituted by CI (and by the manual
+# bootstrap steps in docs/DEPLOYMENT.md) with the real Artifact Registry image URI before apply.
+#
+# Cloud SQL is reached via a `cloud-sql-proxy` sidecar (not Cloud Run's native
+# `--add-cloudsql-instances` Unix-socket connector) — the native connector's own managed sidecar
+# hit a startup-probe timeout in this project that a plain, unprobed sidecar didn't (see
+# docs/DEPLOYMENT.md's "Known issues" section). The app talks to it over a normal TCP DSN
+# (`127.0.0.1:5432`), no code change required for that part.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: hermes-rpt-api
+  labels:
+    cloud.googleapis.com/location: us-central1
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      serviceAccountName: hermes-rpt-api-runtime@hermes-rpt-demo.iam.gserviceaccount.com
+      containers:
+        - name: api
+          image: IMAGE_TAG_PLACEHOLDER
+          ports:
+            - containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 10
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          env:
+            - name: ENVIRONMENT
+              value: "local" # see docs/DEPLOYMENT.md "Auth posture" — no real OIDC login flow
+              # exists yet, so this deploys honestly-labelled dev-token auth, not a lie about
+              # being "production".
+            - name: SERVICE_NAME
+              value: "hermes-rpt"
+            - name: LOG_JSON
+              value: "true"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-rpt-database-url
+                  # Pinned to version 1 deliberately: that version is the TCP form
+                  # (127.0.0.1:5432) this sidecar setup needs. Version 2 (and "latest") is the
+                  # Unix-socket form for Cloud Run's native connector, kept in the same secret
+                  # for reference — see docs/DEPLOYMENT.md.
+                  key: "1"
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hermes-rpt-jwt-secret
+                  key: latest
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.0
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "hermes-rpt-demo:us-central1:hermes-rpt-control-db"
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi

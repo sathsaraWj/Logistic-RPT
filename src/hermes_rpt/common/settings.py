@@ -10,7 +10,7 @@ from __future__ import annotations
 from enum import StrEnum
 from functools import lru_cache
 
-from pydantic import Field, PostgresDsn, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Only ever a valid default outside staging/production — see Settings._reject_insecure_jwt_secret.
@@ -43,8 +43,14 @@ class Settings(BaseSettings):
 
     # Control-plane database. Never used for customer (tenant) data — see
     # docs/ARCHITECTURE.md §1 "Two planes" and src/hermes_rpt/connectors for tenant connections.
-    database_url: PostgresDsn = Field(
-        default=PostgresDsn("postgresql+asyncpg://hermes:hermes@localhost:5432/hermes_control")
+    #
+    # Plain `str`, not `PostgresDsn`: pydantic's URL parser rejects the empty-host form
+    # (`postgresql+asyncpg://user:pass@/dbname?host=/cloudsql/...`) that SQLAlchemy's asyncpg
+    # dialect uses for Unix-domain-socket connections — a real, standard Postgres connection
+    # shape (Cloud SQL's native connector, or any local Unix socket), not a malformed one. The
+    # `_validate_database_url` validator below still fails fast on obviously-wrong input.
+    database_url: str = Field(
+        default="postgresql+asyncpg://hermes:hermes@localhost:5432/hermes_control"
     )
 
     log_level: str = "INFO"
@@ -79,6 +85,16 @@ class Settings(BaseSettings):
         if normalised not in allowed:
             raise ValueError(f"log_level must be one of {sorted(allowed)}, got {value!r}")
         return normalised
+
+    @field_validator("database_url")
+    @classmethod
+    def _validate_database_url(cls, value: str) -> str:
+        if not value.startswith(("postgresql://", "postgresql+asyncpg://")):
+            raise ValueError(
+                "database_url must start with 'postgresql://' or 'postgresql+asyncpg://', "
+                f"got {value!r}"
+            )
+        return value
 
     @model_validator(mode="after")
     def _reject_insecure_jwt_secret_outside_dev(self) -> Settings:

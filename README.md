@@ -17,6 +17,8 @@ isn't implemented.
 * [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — security assumptions and mitigations.
 * [docs/MODEL_RESEARCH_PLAN.md](docs/MODEL_RESEARCH_PLAN.md) — modelling strategy.
 * [docs/adr/](docs/adr/) — why things are built the way they are.
+* [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the GCP/Cloud Run deployment and its GitHub Actions
+  automation, including what's deliberately out of scope for it.
 * [TASKS.md](TASKS.md) — phased, checkable progress.
 
 ## Requirements
