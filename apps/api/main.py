@@ -40,8 +40,10 @@ def _warm_model_loading_imports() -> None:
     alone takes tens of seconds on this stack, which blows straight through
     `ModelLoader`'s per-request load timeout if it happens to land on the first prediction
     request. Paying that cost once here, during startup/readiness, keeps it off every request's
-    timeout budget instead."""
+    timeout budget instead. `torch` is imported alongside it for the same reason, now that
+    `ModelLoader` also serves Hermes-RPT-0.1 (`hermes_rpt.inference.model_loading`)."""
     import mlflow.sklearn  # noqa: F401
+    import torch  # noqa: F401
 
 
 @asynccontextmanager

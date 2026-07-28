@@ -45,11 +45,11 @@ service is coordination, not new business logic:
 |---|---|---|
 | 1-2 | Authenticate / resolve tenant | `apps.api.deps` dependency chain, before the service is constructed |
 | 3 | Authorise `prediction:execute` | `require_scopes` router dependency |
-| 4-6 | Resolve active connection / mapping / feature definition | `FeatureExtractionService` (Phase 8), reused unchanged |
-| 7 | Extract point-in-time features | `FeatureExtractionService.extract` — Phase 8's leakage-cutoff enforcement applies as-is |
-| 8 | Validate model input | fixed feature-name ordering (`_FEATURE_NAMES`) + scikit-learn's own shape check inside `predict_proba` |
+| 4-6 | Resolve active connection / mapping / feature definition | `FeatureExtractionService` (Phase 8) for baselines, `RelationalContextBuilder` (Phase 11) for Hermes-RPT — same underlying allowlist/mapping-resolution safety either way |
+| 7 | Extract point-in-time features | `FeatureExtractionService.extract` for baselines (Phase 8's leakage-cutoff enforcement applies as-is); `RelationalContextBuilder.build_example(..., label=None)` + `encode_batch` for Hermes-RPT — raw relational context instead of a scalar feature row |
+| 8 | Validate model input | fixed feature-name ordering (`_FEATURE_NAMES`) + scikit-learn's own shape check inside `predict_proba` for baselines; `EncodedBatch`'s fixed tensor shapes (`encode_batch`) for Hermes-RPT |
 | 9 | Resolve authorised model version | `ModelVersionRepository.get_production_model` — `PRODUCTION`-staged, shared-or-mine, tenant-private wins ties |
-| 10 | Run prediction | `ModelLoader` + `LoadedModel.predict_proba` |
+| 10 | Run prediction | `ModelLoader` branches by model family to `LoadedModel.predict_proba` (sklearn) or `LoadedHermesRPTModel.predict_proba` (torch) |
 | 11 | Generate safe explanation | `hermes_rpt.inference.explanation` |
 | 12 | Persist prediction lineage | `PredictionRequest` + `PredictionResult` rows |
 | 13 | Emit audit event | `hermes_rpt.audit`, `prediction.execute`, `SUCCESS` or `ERROR` |
@@ -59,19 +59,38 @@ A failure at any point after the `PredictionRequest` row is created marks it `FA
 `ERROR` audit event before re-raising — every prediction attempt is auditable, not just successful
 ones.
 
-## 3. Scope decision: baseline models only, not Hermes-RPT-0.1
+## 3. Scope decision: both model families are servable; Hermes-RPT-0.1 (Tiny, scratch) is
+promoted to production (Phase 19)
 
-This endpoint serves Phase 10's scikit-learn baselines. It deliberately does **not** serve
-Hermes-RPT-0.1 (Phase 11/12): `hermes_rpt.inference.model_loading.ModelLoader.load()` fails closed
-with `UnsupportedModelFamilyError` for any `ModelVersion` whose name marks it as a Hermes-RPT
-model, rather than attempting to load it and mis-serving.
+This endpoint serves both Phase 10's scikit-learn baselines and Phase 11's Hermes-RPT-0.1.
+`hermes_rpt.inference.model_loading.ModelLoader.load()` branches by model family — a `ModelVersion`
+whose name marks it as `hermes-rpt` goes through a torch-checkpoint loading path
+(`LoadedHermesRPTModel`), everything else through the pre-existing sklearn-flavor path
+(`LoadedModel`) — rather than one endpoint silently assuming a single family. `PredictionService`
+branches the same way: baselines get a scalar feature row from `FeatureExtractionService`; Hermes-RPT
+gets raw relational context from `RelationalContextBuilder`, built live per request with `label=None`
+(the same tenant-scoped fetch machinery training already used, now also called from this endpoint).
+Any model family this loader doesn't recognize still fails closed with `UnsupportedModelFamilyError`
+rather than being silently mis-loaded.
 
-Why: this platform documents Hermes-RPT-0.1 throughout Phases 11/12 as experimental, not
-production-ready (see [ADR 0008](adr/0008-baseline-models-before-relational-transformer.md)), and
-serving it needs a fundamentally different request path — raw relational context via
-`RelationalContextBuilder`, not the scalar `dict[str, float | int | bool | None]` a baseline
-consumes. Building that parallel path is explicit follow-up (§7), not something this endpoint
-silently half-does.
+This was, until Phase 19, deliberately out of scope: Hermes-RPT-0.1 was documented throughout
+Phases 11/12 as experimental, not production-ready (see
+[ADR 0008](adr/0008-baseline-models-before-relational-transformer.md)), and ADR-0008 set an
+explicit, falsifiable bar — the transformer must *beat* the strongest baseline to justify serving
+it, not merely exist. That bar wasn't answerable at all on the original synthetic dataset, whose
+label was statistically independent of every feature (see
+[docs/BASELINE_MODELS.md](BASELINE_MODELS.md) §10 and
+[docs/MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §9's Phase 19 follow-up). Phase 19 fixed the
+label generator's correlation, re-ran the comparison, and `hermes-rpt-0.1-tiny-scratch` won
+consistently across three training seeds — see the numbers and the full honesty caveat (still
+synthetic data; still no real-customer-data evidence) in
+[docs/MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §9 and
+[docs/RELEASE_READINESS.md](RELEASE_READINESS.md) §4. It was promoted to `PRODUCTION` as a result.
+
+What's still out of scope: shared cross-tenant pretraining and per-tenant adapters
+(Phases 12/14) are not wired into this endpoint — only the scratch-per-tenant training path is
+servable here. Building an adapter-aware serving path is explicit future follow-up, not something
+this endpoint silently half-does.
 
 ## 4. What a response never contains
 
@@ -136,8 +155,10 @@ given production model, or after a process restart).
 
 ## 7. Known gaps / follow-up
 
-* Hermes-RPT-0.1 serving is out of scope (§3) — a follow-up phase would need a parallel
-  `RelationalContextBuilder`-based serving path and its own `ModelLoader` variant.
+* Shared cross-tenant pretraining and per-tenant adapters (Phases 12/14) are not wired into this
+  endpoint — only baselines and scratch-per-tenant Hermes-RPT-0.1 are servable. An
+  adapter-aware serving path (resolving a `TenantModelAdapter` alongside its frozen base
+  `ModelVersion`) is explicit future follow-up.
 * An idempotency key reused with a *different* `trip_id`/`prediction_time` silently returns the
   first call's cached result rather than rejecting the mismatch with a `409` — acceptable for now
   since idempotency keys are expected to be generated per logical request by the caller, but worth
@@ -147,9 +168,14 @@ given production model, or after a process restart).
   is a cache miss), but a stale in-memory copy of a superseded model is only cleared by a process
   restart. Fine for this platform's current scale; a TTL or explicit invalidation hook is natural
   follow-up.
-* The synthetic dataset's delay label is only weakly correlated with available features (see
-  [BASELINE_MODELS.md](BASELINE_MODELS.md) §10) — a demo prediction's `delay_probability` should be
-  read as "the pipeline works end to end," not as evidence of real predictive skill.
+* The synthetic dataset's delay label was strengthened in Phase 19 to be risk-weighted by
+  distance/vehicle-age/breakdown/route/driver history (see
+  [BASELINE_MODELS.md](BASELINE_MODELS.md) §10) specifically so a baseline-vs-Hermes-RPT
+  comparison could be honest — see [MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §9's Phase 19
+  follow-up for the actual result. This is still synthetic data with deliberately-injected
+  correlation, not real fleet operations — a demo prediction's `delay_probability` is evidence the
+  pipeline and the architecture can exploit learnable structure, not evidence of real-world
+  predictive skill.
 
 ## 8. Testing
 
@@ -162,6 +188,16 @@ given production model, or after a process restart).
   SQL/secret/connection-string/other-tenant leakage, idempotency (same key → same
   `prediction_id`; different keys → independent predictions), and a light concurrent-request smoke
   test.
+* `tests/model/test_predictions_api_hermes_rpt.py` (gated behind `uv sync --group ml`) — the same
+  suite as above, but served by a real trained, `PRODUCTION`-promoted Hermes-RPT-0.1 model, proving
+  the endpoint's public contract is identical regardless of serving family, plus an explicit
+  assertion that no explanation is fabricated for a model with no linear coefficients.
+* `tests/security/test_model_artifact_integrity.py` — checksum-substitution rejection for both
+  the sklearn and Hermes-RPT loading paths.
+* `tests/security/test_transformer_inference_tenant_isolation.py` — proves the live,
+  per-request `RelationalContextBuilder` call this endpoint makes for Hermes-RPT can't resolve
+  another tenant's trip, and that predicting against another tenant's `trip_id` returns `404`
+  with no cross-tenant data in the response.
 * `tests/unit/test_inference_resilience.py` — `with_timeout`, `retry_with_backoff`, and
   `CircuitBreaker`'s closed/open/half-open transitions in isolation, independent of MLflow or the
   API.

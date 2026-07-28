@@ -154,3 +154,39 @@ finding across Phases 10–14 is not "Hermes-RPT works" or "Hermes-RPT doesn't w
 synthetic data available so far cannot tell us which." See
 [docs/RELEASE_READINESS.md](RELEASE_READINESS.md) for how this shapes the recommended next
 milestone (real, consented design-partner data, not more synthetic-data experimentation).
+
+### Follow-up (Phase 19, 2026-07-28): the synthetic label was strengthened, and a real comparison
+now exists
+
+Point 2's "inconclusive" verdict above was a direct consequence of the synthetic label generator
+(`hermes_rpt.synthetic.generator._resolve_trip_outcome`) producing a delay outcome statistically
+independent of every generated feature — no model, baseline or transformer, had real signal to
+find. Phase 19 made delay/cancellation probability risk-weighted by `planned_distance_km`,
+vehicle age, recent-breakdown history, and route/driver delay-rate history (see
+[docs/BASELINE_MODELS.md](BASELINE_MODELS.md) §10 for the exact mechanism), specifically to make
+an honest ADR-0008 comparison possible.
+
+Re-run against the corrected generator (`make train-hermes-rpt`, one synthetic Alpha tenant,
+515/110/112 train/validation/test rows), `hermes-rpt-0.1-tiny-scratch` beat every Phase 10
+baseline on PR-AUC — the metric `build_comparison_report` selects on — consistently across three
+different training seeds (`random_seed=42,7,123`):
+
+| Model | PR-AUC (seed 42) | PR-AUC (seed 7) | PR-AUC (seed 123) |
+|---|---|---|---|
+| logistic_regression | 0.2793 | 0.2793 | 0.2793 |
+| gradient_boosted_trees | 0.2430 | 0.2430 | 0.2430 |
+| mlp | 0.1998 | 0.1998 | 0.1998 |
+| **hermes-rpt-0.1-tiny-scratch** | **0.3633** | **0.3488** | **0.3053** |
+
+(Baseline PR-AUC is seed-independent here — only the transformer's `random_seed` was varied,
+against the same fixed-seed dataset, per the decision rule this needed: a win only counts if it's
+the best model *and* holds across seeds, not a one-seed fluke.) `hermes-rpt-0.1-tiny-scratch` was
+subsequently promoted to `PRODUCTION` — see [docs/RELEASE_READINESS.md](RELEASE_READINESS.md) §4
+and [ADR-0008](adr/0008-baseline-models-before-relational-transformer.md)'s update.
+
+This is real evidence the architecture can exploit relational context when the underlying data
+actually has learnable structure — but the structure here is still synthetic, and the correlation
+weights that make it learnable were chosen by this same phase's own engineering, not observed in
+real fleet operations. It answers "can Hermes-RPT beat a baseline when there's something to
+learn," not "does Hermes-RPT beat a baseline on real customer data" — that second question is
+unchanged from §3/§6 and still needs real, consented design-partner data to answer.

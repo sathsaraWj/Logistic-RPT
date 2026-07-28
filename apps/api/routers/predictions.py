@@ -27,6 +27,7 @@ from hermes_rpt.inference.service import (
     PredictionResponse,
     PredictionTaskNotConfiguredError,
 )
+from hermes_rpt.models.transformer.context import TargetRecordNotFoundError
 from hermes_rpt.registry.artifact_integrity import ArtifactIntegrityError
 from hermes_rpt.tenants.context import TenantContext
 
@@ -98,6 +99,11 @@ async def predict_delivery_delay(
             idempotency_key=idempotency_key,
         )
     except TargetRowNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Trip not found") from exc
+    except TargetRecordNotFoundError as exc:
+        # Hermes-RPT-0.1's relational-context equivalent of TargetRowNotFoundError above — same
+        # "the trip doesn't exist for this tenant" case, just raised by RelationalContextBuilder
+        # instead of FeatureExtractionService.
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Trip not found") from exc
     except TargetMappingUnavailableError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc

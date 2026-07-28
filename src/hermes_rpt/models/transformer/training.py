@@ -14,7 +14,7 @@ sizes (a few hundred rows), not a claim about how a larger production run would 
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from hermes_rpt.models.training import TrainingResult
 from hermes_rpt.models.transformer.context import RelationalContextBuilder, RelationalExample
 from hermes_rpt.models.transformer.encoding import encode_batch
 from hermes_rpt.models.transformer.model import HermesRPT01, HermesRPTConfig
+from hermes_rpt.registry.artifact_integrity import compute_artifact_checksum
 from hermes_rpt.registry.models import ModelVersion
 from hermes_rpt.registry.service import ModelRegistryService
 from hermes_rpt.tenants.context import TenantContext
@@ -144,7 +145,6 @@ class HermesRPTTrainingService:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = checkpoint_dir / f"hermes_rpt_{config.name}.pt"
         torch.save({"config": config, "state_dict": model.state_dict()}, checkpoint_path)
-        artifact_checksum = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
 
         mlflow.set_experiment(experiment_name)
         with mlflow.start_run() as run:
@@ -187,6 +187,12 @@ class HermesRPTTrainingService:
             )
             mlflow.log_artifact(str(checkpoint_path))
             model_uri = f"runs:/{run.info.run_id}/{checkpoint_path.name}"
+            # Hashed *after* logging, from what MLflow actually stored — same
+            # `compute_artifact_checksum` the baseline path uses (hermes_rpt.models.training),
+            # not a separate local-file hash, so `ModelLoader`'s re-verification at load time is
+            # guaranteed to use the exact same algorithm as registration, not a hand-rolled one
+            # that happens to need to agree with it.
+            artifact_checksum = await asyncio.to_thread(compute_artifact_checksum, model_uri)
             variant = "pretrained" if pretrained_backbone_state_dict is not None else "scratch"
             model_type = f"hermes-rpt-0.1-{config.name}-{variant}"
 

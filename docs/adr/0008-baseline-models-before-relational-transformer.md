@@ -33,3 +33,20 @@ reason to invest further compute.
   transformer is introduced.
 * Creates an explicit, falsifiable bar (beat the baseline meaningfully) rather than an assumed
   narrative that the transformer is automatically the better choice.
+
+## Update (Phase 19, 2026-07-28)
+
+The bar this ADR set was actually cleared. The original synthetic label generator produced a
+delay outcome statistically independent of every feature, so no comparison run — before Phase 19
+— could be more than noise (`docs/MODEL_RESEARCH_PLAN.md` §9, original text, preserved above).
+Phase 19 made the label risk-weighted by distance/vehicle-age/breakdown/route/driver history
+(`docs/BASELINE_MODELS.md` §10) specifically to make an honest comparison possible, then re-ran
+it: `hermes-rpt-0.1-tiny-scratch` beat every Phase 10 baseline on PR-AUC, consistently across
+three different training seeds (0.3053–0.3633 vs. the strongest baseline's 0.2793 — full table in
+`docs/MODEL_RESEARCH_PLAN.md` §9's Phase 19 follow-up). Per the decision this ADR describes, it
+was promoted to `PRODUCTION` via `ModelRegistryService.transition_stage`.
+
+This is a real result, not a formality — but it's still a synthetic-data result with
+deliberately-injected correlation, not evidence about real fleet operations. The production
+blocker in `docs/RELEASE_READINESS.md` §6 item 2 (no real customer data has validated any
+model-quality claim) is unaffected by this update and applies to both model families equally.

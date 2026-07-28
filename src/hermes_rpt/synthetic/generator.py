@@ -18,8 +18,19 @@ _VEHICLE_COUNT = 15
 _ROUTE_COUNT = 5
 _DRIVER_COUNT = 8
 _TRIPS_PER_DAY_RANGE = (2, 5)
-_ON_TIME_DELAY_PROBABILITY = 0.88
-_CANCELLED_PROBABILITY = 0.03
+
+# Delay/cancellation probability is risk-weighted (see `_resolve_trip_outcome`) rather than a
+# flat constant, so the label has real, learnable correlation with `planned_distance_km`,
+# vehicle age/breakdown history, and route/driver history — the same signals
+# `DELIVERY_DELAY_RISK_CONTRACT` (`hermes_rpt.features.contract`) exposes as features. Bounds
+# chosen to keep the overall base rate close to the previous flat 12%/3% rates, not to shift
+# class balance dramatically.
+_MIN_DELAY_PROBABILITY = 0.05
+_MAX_DELAY_PROBABILITY = 0.45
+_BASE_CANCELLED_PROBABILITY = 0.02
+_DELAY_LABEL_THRESHOLD_MINUTES = 30  # matches datasets.label._DEFAULT_DELAY_THRESHOLD_MINUTES
+_BREAKDOWN_LOOKBACK_DAYS = 180  # matches the real `previous_breakdown_count` feature's window
+_RECENT_OUTCOME_WINDOW = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +165,17 @@ def _generate_maintenance_and_odometer(
             )
 
 
+def _recent_rate(outcomes: list[bool] | None) -> float:
+    return sum(outcomes) / len(outcomes) if outcomes else 0.0
+
+
+def _record_recent_outcome(history: dict[str, list[bool]], key: str, *, was_bad: bool) -> None:
+    bucket = history.setdefault(key, [])
+    bucket.append(was_bad)
+    if len(bucket) > _RECENT_OUTCOME_WINDOW:
+        del bucket[0]
+
+
 def _generate_trips_deliveries_fuel(
     data: SyntheticFleetData,
     rng: random.Random,
@@ -165,6 +187,18 @@ def _generate_trips_deliveries_fuel(
     start: datetime,
     end: datetime,
 ) -> None:
+    vehicle_acquired_at = {v["vehicle_id"]: v["acquired_at"] for v in data.vehicles}
+    vehicle_unscheduled_maintenance: dict[str, list[datetime]] = {}
+    for event in data.maintenance_events:
+        if event["event_type"] == "unscheduled":
+            vehicle_unscheduled_maintenance.setdefault(event["vehicle_id"], []).append(
+                event["started_at"]
+            )
+    # Updated after every trip is resolved below — this is what gives `route`/`driver` history
+    # real, incrementally-accumulated signal rather than a lookahead into the future.
+    route_recent_outcomes: dict[str, list[bool]] = {}
+    driver_recent_outcomes: dict[str, list[bool]] = {}
+
     trip_counter = 0
     day = start
     while day < end:
@@ -172,24 +206,51 @@ def _generate_trips_deliveries_fuel(
             trip_id = f"{tenant_slug}-trip-{trip_counter:05d}"
             trip_counter += 1
             vehicle_id = rng.choice(vehicle_ids)
+            driver_id = rng.choice(driver_ids)
+            route_id = rng.choice(route_ids)
             planned_departure_at = day + timedelta(hours=rng.uniform(5, 20))
             planned_distance_km = round(rng.uniform(15, 450), 1)
             planned_duration_hours = max(planned_distance_km / 60, 0.5)
             planned_arrival_at = planned_departure_at + timedelta(hours=planned_duration_hours)
+
+            vehicle_age_years = (
+                planned_departure_at - vehicle_acquired_at[vehicle_id]
+            ).days / 365.25
+            recent_breakdown_count = sum(
+                1
+                for started_at in vehicle_unscheduled_maintenance.get(vehicle_id, [])
+                if planned_departure_at - timedelta(days=_BREAKDOWN_LOOKBACK_DAYS)
+                <= started_at
+                < planned_departure_at
+            )
 
             status, actual_departure_at, actual_arrival_at = _resolve_trip_outcome(
                 rng,
                 planned_departure_at=planned_departure_at,
                 planned_arrival_at=planned_arrival_at,
                 end=end,
+                distance_risk=min(planned_distance_km / 450.0, 1.0),
+                breakdown_risk=min(recent_breakdown_count / 3.0, 1.0),
+                age_risk=min(vehicle_age_years / 6.0, 1.0),
+                route_recent_delay_rate=_recent_rate(route_recent_outcomes.get(route_id)),
+                driver_recent_late_rate=_recent_rate(driver_recent_outcomes.get(driver_id)),
             )
+
+            if status != "planned":
+                was_bad = status == "cancelled" or (
+                    actual_arrival_at is not None
+                    and actual_arrival_at - planned_arrival_at
+                    > timedelta(minutes=_DELAY_LABEL_THRESHOLD_MINUTES)
+                )
+                _record_recent_outcome(route_recent_outcomes, route_id, was_bad=was_bad)
+                _record_recent_outcome(driver_recent_outcomes, driver_id, was_bad=was_bad)
 
             data.trips.append(
                 {
                     "trip_id": trip_id,
                     "vehicle_id": vehicle_id,
-                    "driver_id": rng.choice(driver_ids),
-                    "route_id": rng.choice(route_ids),
+                    "driver_id": driver_id,
+                    "route_id": route_id,
                     "planned_departure_at": planned_departure_at,
                     "planned_arrival_at": planned_arrival_at,
                     "actual_departure_at": actual_departure_at,
@@ -232,6 +293,11 @@ def _resolve_trip_outcome(
     planned_departure_at: datetime,
     planned_arrival_at: datetime,
     end: datetime,
+    distance_risk: float,
+    breakdown_risk: float,
+    age_risk: float,
+    route_recent_delay_rate: float,
+    driver_recent_late_rate: float,
 ) -> tuple[str, datetime | None, datetime | None]:
     if planned_departure_at > end - timedelta(hours=18):
         # Too close to the dataset's time-range cutoff for an outcome to exist yet — this is
@@ -241,16 +307,37 @@ def _resolve_trip_outcome(
         # the day's random departure-hour spread, not just a lucky few.
         return "planned", None, None
 
-    if rng.random() < _CANCELLED_PROBABILITY:
+    # A broken-down or aging vehicle is the most plausible real-world cancellation driver —
+    # cancellation risk is weighted mainly by those two signals, distance/history don't apply.
+    cancellation_risk = 0.5 * breakdown_risk + 0.5 * age_risk
+    cancelled_probability = _BASE_CANCELLED_PROBABILITY + 0.05 * cancellation_risk
+    if rng.random() < cancelled_probability:
         return "cancelled", None, None
 
+    risk_signal = (
+        0.30 * distance_risk
+        + 0.30 * breakdown_risk
+        + 0.15 * route_recent_delay_rate
+        + 0.15 * driver_recent_late_rate
+        + 0.10 * age_risk
+    )
+    delay_probability = (
+        _MIN_DELAY_PROBABILITY + (_MAX_DELAY_PROBABILITY - _MIN_DELAY_PROBABILITY) * risk_signal
+    )
+    # Independent noise so two trips with identical risk signals still don't always share an
+    # outcome — a real (if weighted) coin flip, not a deterministic risk-score threshold.
+    delay_probability = min(
+        max(delay_probability + rng.gauss(0, 0.05), _MIN_DELAY_PROBABILITY),
+        _MAX_DELAY_PROBABILITY,
+    )
+
     actual_departure_at = planned_departure_at + timedelta(minutes=rng.uniform(-5, 25))
-    if rng.random() < _ON_TIME_DELAY_PROBABILITY:
+    if rng.random() < delay_probability:
+        delay_minutes = rng.uniform(35, 240)  # a real delay — the positive class
+    else:
         delay_minutes = rng.uniform(
             -10, 25
         )  # on time or a little early/late, under the 30min threshold
-    else:
-        delay_minutes = rng.uniform(35, 240)  # a real delay — the positive class
     actual_arrival_at = planned_arrival_at + timedelta(minutes=delay_minutes)
     return "completed", actual_departure_at, actual_arrival_at
 

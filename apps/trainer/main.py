@@ -167,7 +167,7 @@ async def _run_baselines() -> None:
     await control_plane_engine.dispose()
 
 
-async def _run_hermes_rpt() -> None:
+async def _run_hermes_rpt(*, promote_if_winner: bool = False) -> None:
     from hermes_rpt.common import model_registry  # noqa: F401 - populates Base.metadata
     from hermes_rpt.common.db import Base
     from hermes_rpt.features.contract import DELIVERY_DELAY_RISK_CONTRACT
@@ -175,6 +175,8 @@ async def _run_hermes_rpt() -> None:
     from hermes_rpt.models.transformer.context import RelationalContextBuilder
     from hermes_rpt.models.transformer.model import TINY
     from hermes_rpt.models.transformer.training import HermesRPTTrainingService
+    from hermes_rpt.registry.enums import ModelStage
+    from hermes_rpt.registry.service import ModelRegistryService
 
     logger = get_logger(__name__)
     code_revision = _code_revision()
@@ -242,6 +244,28 @@ async def _run_hermes_rpt() -> None:
         "\nNote: do not read a Hermes-RPT-0.1 win here as a claim of production-readiness — "
         "see docs/HERMES_RPT_0_1.md's Limitations section."
     )
+
+    if promote_if_winner:
+        if report.selected_model_type == hermes_rpt_result.model_type:
+            async with session_factory() as promote_session:
+                registry = ModelRegistryService(promote_session)
+                await registry.transition_stage(
+                    hermes_rpt_result.model_version_id, to_stage=ModelStage.STAGING
+                )
+                await registry.transition_stage(
+                    hermes_rpt_result.model_version_id, to_stage=ModelStage.PRODUCTION
+                )
+                await promote_session.commit()
+            print(
+                f"\nPromoted {hermes_rpt_result.model_type!r} "
+                f"({hermes_rpt_result.model_version_id}) to PRODUCTION — it was the selected "
+                "model in the comparison above."
+            )
+        else:
+            print(
+                f"\n--promote-if-winner set, but {report.selected_model_type!r} was selected, "
+                f"not {hermes_rpt_result.model_type!r} — leaving Hermes-RPT-0.1 at CANDIDATE."
+            )
 
     await control_plane_engine.dispose()
 
@@ -652,13 +676,19 @@ def main() -> None:
     parser.add_argument(
         "task", choices=["baselines", "hermes-rpt", "pretrain", "adapt"], nargs="?", default=None
     )
+    parser.add_argument(
+        "--promote-if-winner",
+        action="store_true",
+        help="`hermes-rpt` only: promote hermes-rpt-0.1-tiny-scratch to PRODUCTION if it's the "
+        "comparison's selected model, per ADR-0008's falsifiable bar. Never promotes a loser.",
+    )
     args = parser.parse_args()
 
     if args.task == "baselines":
         asyncio.run(_run_baselines())
         return
     if args.task == "hermes-rpt":
-        asyncio.run(_run_hermes_rpt())
+        asyncio.run(_run_hermes_rpt(promote_if_winner=args.promote_if_winner))
         return
     if args.task == "pretrain":
         asyncio.run(_run_pretrain())

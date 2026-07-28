@@ -34,12 +34,22 @@ def compute_artifact_checksum(artifact_uri: str) -> str:
     """Downloads the artifact (a no-op copy if it's already local-cached by this process) and
     hashes every file's bytes in a stable (sorted-path) order — deterministic across process
     restarts and across sklearn/skops serialization detail changes, since it hashes what's on
-    disk, not an in-memory object's pickle representation."""
+    disk, not an in-memory object's pickle representation.
 
-    local_dir = Path(mlflow.artifacts.download_artifacts(artifact_uri=artifact_uri))
+    `mlflow.artifacts.download_artifacts` returns a path to a *directory* for a multi-file
+    artifact (e.g. `mlflow.sklearn.log_model`'s MLmodel bundle) but a path to the *file itself*
+    for a single-file artifact logged via a plain `mlflow.log_artifact()` (e.g. Hermes-RPT's
+    `torch.save` checkpoint) — `Path.rglob` silently finds nothing when pointed at a file rather
+    than a directory, so that case must be handled explicitly rather than falling through to an
+    always-empty (and therefore always-"matching", security-defeating) hash."""
+
+    local_path = Path(mlflow.artifacts.download_artifacts(artifact_uri=artifact_uri))
+    if local_path.is_file():
+        return hashlib.sha256(local_path.read_bytes()).hexdigest()
+
     hasher = hashlib.sha256()
-    files = sorted(p for p in local_dir.rglob("*") if p.is_file())
+    files = sorted(p for p in local_path.rglob("*") if p.is_file())
     for path in files:
-        hasher.update(str(path.relative_to(local_dir)).encode("utf-8"))
+        hasher.update(str(path.relative_to(local_path)).encode("utf-8"))
         hasher.update(path.read_bytes())
     return hasher.hexdigest()

@@ -5,7 +5,48 @@ Phase-by-phase history of the Hermes-RPT platform build-out (`0.1.0`, unreleased
 Each phase corresponds to a numbered prompt in `prompts.txt`; see [TASKS.md](TASKS.md) for the
 full, checkable detail behind every line here.
 
-## Phase 18 — Final repository audit (this change)
+## Phase 19 — Hermes-RPT-0.1 (Tiny, scratch) promoted to production (this change)
+
+- Strengthened the synthetic label generator (`hermes_rpt.synthetic.generator._resolve_trip_outcome`)
+  to be risk-weighted by trip distance, vehicle age, recent breakdown history, and route/driver
+  delay-rate history — the original label was statistically independent of every feature, so no
+  baseline-vs-transformer comparison could ever be more than noise. See
+  `docs/BASELINE_MODELS.md` §10.
+- Re-ran the honest baseline-vs-Hermes-RPT comparison (`make train-hermes-rpt`) against the
+  corrected label: `hermes-rpt-0.1-tiny-scratch` beat every Phase 10 baseline on PR-AUC,
+  consistently across three training seeds — full numbers in `docs/MODEL_RESEARCH_PLAN.md` §9's
+  Phase 19 follow-up and `docs/adr/0008-baseline-models-before-relational-transformer.md`'s
+  update. Promoted to `PRODUCTION` as a result, per ADR-0008's own falsifiable bar.
+- Built the real-time serving path Hermes-RPT never had: `ModelLoader` (`hermes_rpt.inference.
+  model_loading`) now branches by model family to a new torch-checkpoint loading path
+  (`LoadedHermesRPTModel`) alongside the existing sklearn path; `PredictionService` now builds
+  live relational context via `RelationalContextBuilder` (`label=None`) for Hermes-RPT requests
+  instead of `FeatureExtractionService`'s scalar feature row.
+- Fixed a real, previously-latent bug this work surfaced: `compute_artifact_checksum`
+  (`hermes_rpt.registry.artifact_integrity`) silently hashed *zero bytes* for any single-file
+  MLflow artifact (`mlflow.artifacts.download_artifacts` returns the file path itself, not a
+  containing directory, for a single-file artifact) — meaning every Hermes-RPT model would have
+  failed integrity verification the moment it was actually served for real. Caught by
+  `tests/security/test_transformer_inference_tenant_isolation.py`'s real, unmocked round trip, not
+  by unit tests that had mocked past the discrepancy. Fixed the shared checksum function and
+  aligned `HermesRPTTrainingService.train()` to compute its stored checksum the same way the
+  baseline path already does, rather than a separate, hand-rolled local-file hash.
+- New tests: `tests/model/test_predictions_api_hermes_rpt.py` (full endpoint contract, served by a
+  real trained/promoted Hermes-RPT model), two new checksum-substitution tests in
+  `tests/security/test_model_artifact_integrity.py`, and
+  `tests/security/test_transformer_inference_tenant_isolation.py` (proves the new live
+  `RelationalContextBuilder` caller can't cross tenants).
+- Fixed a cold-start latency bug found while exercising the full local demo pipeline: the first
+  `mlflow.sklearn.load_model` call in a process pays tens of seconds of one-time torch/skops
+  import cost plus an unnecessary MLflow telemetry network call, both charged against the
+  10-second per-request model-load timeout. Disabled the telemetry call, warmed the import at
+  app startup instead of on the first request, and raised the timeout default to 60s.
+- Docs: `docs/INFERENCE_API.md` §3/§7/§8 rewritten for the two-family serving design,
+  `docs/RELEASE_READINESS.md` §4/§6 updated with the actual result, `docs/adr/0008-baseline-
+  models-before-relational-transformer.md` update note, `docs/MODEL_RESEARCH_PLAN.md` §9
+  follow-up.
+
+## Phase 18 — Final repository audit
 
 - Full-repository audit: architecture, tenant isolation, test coverage, type safety, dependency
   health, migration consistency (verified a clean upgrade+downgrade cycle from scratch), API

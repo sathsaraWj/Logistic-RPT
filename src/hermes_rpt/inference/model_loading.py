@@ -1,18 +1,17 @@
 """Loads a served model from its registry artifact (Phase 13) — the "resolve authorised model
 version" + "run prediction" steps of the inference flow.
 
-Scoped to Phase 10's baseline models only. Hermes-RPT-0.1 (Phase 11/12) needs a fundamentally
-different input — raw relational context via `RelationalContextBuilder`, not the scalar
-`dict[str, float | int | bool | None]` a baseline consumes — and is documented throughout
-Phases 11/12 as experimental, not production-ready. Attempting to serve a Hermes-RPT
-`ModelVersion` through this path fails closed with `UnsupportedModelFamilyError` rather than
-silently mis-loading it; wiring a parallel relational-context serving flow for it is explicit
-follow-up (see docs/INFERENCE_API.md).
+Two model families are servable: Phase 10 baselines (`LoadedModel`, an MLflow sklearn-flavor
+artifact) and Hermes-RPT-0.1 (`LoadedHermesRPTModel`, a raw `torch.save({"config", "state_dict"})`
+checkpoint logged as a plain MLflow artifact — see `hermes_rpt.models.transformer.training`).
+`ModelLoader.load()` branches on `ModelVersion.name` to pick the right loading path; any other
+name is rejected with `UnsupportedModelFamilyError` rather than silently mis-loaded.
 
 Loaded models are cached in-process, keyed by `ModelVersion.id` — MLflow artifact loading is the
 one genuinely "external dependency" in the inference flow, so it is the one thing wrapped in a
 timeout + circuit breaker + retry here (Phase 13: "add timeout, retry and circuit-breaker
-interfaces").
+interfaces"), shared across both families (one `ModelLoader` instance, one circuit breaker —
+they compete for the same "is the artifact store healthy" signal).
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ import asyncio
 import os
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 # Must be set before any mlflow call that might trigger its telemetry client (e.g. the first
 # `mlflow.sklearn.load_model`) — otherwise loading a model artifact pays for an unrelated,
@@ -28,6 +28,7 @@ from dataclasses import dataclass
 os.environ.setdefault("MLFLOW_DISABLE_TELEMETRY", "true")
 
 import mlflow
+import torch
 
 from hermes_rpt.common.logging import get_logger
 from hermes_rpt.inference.resilience import (
@@ -36,12 +37,23 @@ from hermes_rpt.inference.resilience import (
     retry_with_backoff,
     with_timeout,
 )
+from hermes_rpt.models.transformer.encoding import EncodedBatch
+from hermes_rpt.models.transformer.model import HermesRPT01, HermesRPTConfig
 from hermes_rpt.registry.artifact_integrity import ArtifactIntegrityError, compute_artifact_checksum
 from hermes_rpt.registry.models import ModelVersion
 
 _HERMES_RPT_NAME_MARKER = "hermes-rpt"
 
 logger = get_logger(__name__)
+
+
+class NoCheckpointArtifactError(Exception):
+    def __init__(self, model_version_id: uuid.UUID, local_dir: str) -> None:
+        super().__init__(
+            f"Model version {model_version_id}'s artifact directory {local_dir!r} contains no "
+            "'*.pt' checkpoint file — a hermes-rpt-named ModelVersion with no matching torch "
+            "checkpoint artifact is a data-integrity problem, not a transient load failure"
+        )
 
 
 class UnsupportedModelFamilyError(Exception):
@@ -77,6 +89,26 @@ class LoadedModel:
         return dict(zip(feature_names, (float(c) for c in coefficients[0]), strict=True))
 
 
+@dataclass(frozen=True, slots=True)
+class LoadedHermesRPTModel:
+    model_version_id: uuid.UUID
+    model: HermesRPT01
+    config: HermesRPTConfig
+
+    def predict_proba(self, batch: EncodedBatch) -> float:
+        return float(self.model.predict_proba(batch).item())
+
+    def feature_importance(self, feature_names: tuple[str, ...]) -> dict[str, float] | None:
+        """Hermes-RPT-0.1 has no linear coefficient to report a contribution from — always
+        `None`, the same "never fabricate an explanation a model can't honestly support" rule
+        `LoadedModel.feature_importance` already applies to gradient-boosted trees/MLP."""
+
+        return None
+
+
+AnyLoadedModel = LoadedModel | LoadedHermesRPTModel
+
+
 class ModelLoader:
     """One instance per process is expected (see `apps.api.deps`) — the cache and circuit
     breaker are meaningless if a new instance is built per request."""
@@ -99,49 +131,88 @@ class ModelLoader:
         self._load_timeout_seconds = load_timeout_seconds
         self._retry_config = retry_config or RetryConfig()
         self._circuit_breaker = circuit_breaker or CircuitBreaker()
-        self._cache: dict[uuid.UUID, LoadedModel] = {}
+        self._cache: dict[uuid.UUID, AnyLoadedModel] = {}
         self._lock = asyncio.Lock()
 
-    async def load(self, model_version: ModelVersion) -> LoadedModel:
-        if _HERMES_RPT_NAME_MARKER in model_version.name:
-            raise UnsupportedModelFamilyError(model_version.name)
+    async def _verify_checksum(self, model_version: ModelVersion) -> None:
+        # Re-verify the artifact's integrity before trusting it — a Phase 16 security review
+        # found nothing ever re-checked `artifact_checksum` after registration, so a tampered
+        # `artifact_uri` (repointed at a different model) or a substituted artifact under an
+        # unchanged URI would have been served undetected. Flavor-agnostic — used by both
+        # families.
+        actual_checksum = await asyncio.to_thread(
+            compute_artifact_checksum, model_version.artifact_uri
+        )
+        if actual_checksum != model_version.artifact_checksum:
+            logger.error(
+                "model_artifact_integrity_check_failed",
+                model_version_id=str(model_version.id),
+                expected_checksum=model_version.artifact_checksum,
+                actual_checksum=actual_checksum,
+            )
+            raise ArtifactIntegrityError(
+                model_version.id,
+                expected=model_version.artifact_checksum,
+                actual=actual_checksum,
+            )
+
+    async def _load_sklearn(self, model_version: ModelVersion) -> LoadedModel:
+        if self._mlflow_tracking_uri:
+            mlflow.set_tracking_uri(self._mlflow_tracking_uri)
+        await self._verify_checksum(model_version)
+        estimator = await asyncio.to_thread(mlflow.sklearn.load_model, model_version.artifact_uri)
+        return LoadedModel(model_version_id=model_version.id, estimator=estimator)
+
+    async def _load_hermes_rpt(self, model_version: ModelVersion) -> LoadedHermesRPTModel:
+        if self._mlflow_tracking_uri:
+            mlflow.set_tracking_uri(self._mlflow_tracking_uri)
+        await self._verify_checksum(model_version)
+        # `download_artifacts` returns a path to the downloaded *file itself* for a single-file
+        # artifact (Hermes-RPT's checkpoint, logged via a plain `mlflow.log_artifact()`), not a
+        # containing directory — unlike a multi-file artifact (e.g. an sklearn model bundle). The
+        # same distinction `compute_artifact_checksum` has to handle explicitly.
+        downloaded_path = Path(
+            await asyncio.to_thread(
+                mlflow.artifacts.download_artifacts, artifact_uri=model_version.artifact_uri
+            )
+        )
+        if downloaded_path.is_file():
+            checkpoint_file = downloaded_path if downloaded_path.suffix == ".pt" else None
+        else:
+            checkpoint_file = next(downloaded_path.glob("*.pt"), None)
+        if checkpoint_file is None:
+            raise NoCheckpointArtifactError(model_version.id, str(downloaded_path))
+        # `weights_only=False`: the checkpoint stores a plain `HermesRPTConfig` dataclass
+        # alongside the state dict (`HermesRPTTrainingService.train`, `torch.save({"config":
+        # ..., "state_dict": ...})`), which `weights_only=True` can't deserialize — same
+        # precedent as `apps/trainer/main.py` and `tests/model/test_transformer_checkpoint.py`.
+        # Safe under the same trust boundary: the checksum above already re-verified this exact
+        # artifact against what was registered, so this isn't an arbitrary untrusted pickle.
+        checkpoint = await asyncio.to_thread(torch.load, checkpoint_file, weights_only=False)
+        model = HermesRPT01(checkpoint["config"])
+        model.load_state_dict(checkpoint["state_dict"])
+        model.eval()
+        return LoadedHermesRPTModel(
+            model_version_id=model_version.id, model=model, config=checkpoint["config"]
+        )
+
+    async def load(self, model_version: ModelVersion) -> AnyLoadedModel:
+        is_hermes_rpt = _HERMES_RPT_NAME_MARKER in model_version.name
 
         async with self._lock:
             cached = self._cache.get(model_version.id)
             if cached is not None:
                 return cached
 
-            async def _load() -> LoadedModel:
-                if self._mlflow_tracking_uri:
-                    mlflow.set_tracking_uri(self._mlflow_tracking_uri)
-                # Re-verify the artifact's integrity before trusting it — a Phase 16 security
-                # review found nothing ever re-checked `artifact_checksum` after registration,
-                # so a tampered `artifact_uri` (repointed at a different model) or a substituted
-                # artifact under an unchanged URI would have been served undetected.
-                actual_checksum = await asyncio.to_thread(
-                    compute_artifact_checksum, model_version.artifact_uri
-                )
-                if actual_checksum != model_version.artifact_checksum:
-                    logger.error(
-                        "model_artifact_integrity_check_failed",
-                        model_version_id=str(model_version.id),
-                        expected_checksum=model_version.artifact_checksum,
-                        actual_checksum=actual_checksum,
-                    )
-                    raise ArtifactIntegrityError(
-                        model_version.id,
-                        expected=model_version.artifact_checksum,
-                        actual=actual_checksum,
-                    )
-                estimator = await asyncio.to_thread(
-                    mlflow.sklearn.load_model, model_version.artifact_uri
-                )
-                return LoadedModel(model_version_id=model_version.id, estimator=estimator)
+            async def _load() -> AnyLoadedModel:
+                if is_hermes_rpt:
+                    return await self._load_hermes_rpt(model_version)
+                return await self._load_sklearn(model_version)
 
-            async def _load_with_timeout() -> LoadedModel:
+            async def _load_with_timeout() -> AnyLoadedModel:
                 return await with_timeout(_load(), seconds=self._load_timeout_seconds)
 
-            async def _load_with_circuit_breaker() -> LoadedModel:
+            async def _load_with_circuit_breaker() -> AnyLoadedModel:
                 return await self._circuit_breaker.call(_load_with_timeout)
 
             loaded = await retry_with_backoff(_load_with_circuit_breaker, config=self._retry_config)

@@ -144,10 +144,20 @@ same "generated data must be stored outside the source repository" rule Phase 9 
 ## 10. Known gaps / follow-up
 
 * The synthetic generator's delay outcome (`hermes_rpt.synthetic.generator._resolve_trip_outcome`)
-  is only weakly correlated with the feature set — realistic missingness/imbalance/history was
-  Phase 9's goal, not "this specific baseline should score well." A demo run's ROC-AUC hovering
-  near 0.5 is an honest reflection of that, not a training bug; a future phase could strengthen
-  the synthetic correlation if a more compelling baseline comparison demo is needed.
+  is now risk-weighted rather than a flat probability: `_generate_trips_deliveries_fuel`
+  computes, per trip, a distance signal (`planned_distance_km`), a breakdown signal (recent
+  unscheduled maintenance in a trailing 180-day window — the same window the real
+  `previous_breakdown_count` feature uses), a vehicle-age signal, and incrementally-accumulated
+  recent route/driver delay-rate history (last 20 outcomes each); these are combined with fixed
+  weights (distance 0.30, breakdown 0.30, route history 0.15, driver history 0.15, age 0.10) into
+  a delay probability between `_MIN_DELAY_PROBABILITY` (0.05) and `_MAX_DELAY_PROBABILITY` (0.45),
+  plus independent Gaussian noise so identical risk signals don't always produce the same outcome.
+  Cancellation is weighted similarly by breakdown/age risk. This was done specifically so a
+  Hermes-RPT-0.1-vs-baseline comparison per [ADR-0008](adr/0008-baseline-models-before-relational-transformer.md)
+  can be honest — previously the label was statistically independent of every feature, so no
+  comparison result (baseline or transformer) could be more than noise. Determinism per
+  `(tenant_slug, seed, start, end)` is unaffected; only the *values* generated for a given seed
+  changed, not the reproducibility guarantee itself.
 * Gradient-boosted trees has no feature-importance signal via this interface (see §2) —
   permutation importance would need held-out data this interface doesn't currently pass through.
 * `apps/trainer/main.py`'s `baselines` command always trains against a single freshly-provisioned

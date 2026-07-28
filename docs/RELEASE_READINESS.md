@@ -117,11 +117,25 @@ Every engineering/architecture claim in the research plan is validated: the same
 unmodified across heterogeneous schemas, relational context is real (not a flattened feature
 vector), tenant adapters are structurally isolated (proven by assertion against the real
 governance layer, not just by inspection), and every training run is reproducible given a fixed
-seed. **No quality claim is validated** — whether Hermes-RPT actually predicts delivery delay
-better than a strong tabular baseline, or whether pretraining actually helps, remains genuinely
-open, because the synthetic data available so far cannot distinguish a good model from a
-mediocre one. See [docs/MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §9 for the full,
-honest retrospective.
+seed.
+
+**Phase 19 update**: the synthetic label generator was strengthened to be risk-weighted (distance,
+vehicle age, breakdown/route/driver history — see
+[docs/BASELINE_MODELS.md](BASELINE_MODELS.md) §10) specifically to make a real baseline
+comparison possible; the original generator's label was statistically independent of every
+feature, so nothing before this could be more than noise. Re-run against the corrected generator,
+`hermes-rpt-0.1-tiny-scratch` beat every Phase 10 baseline on PR-AUC consistently across three
+training seeds (0.3053–0.3633 vs. the best baseline's 0.2793 — full table in
+[docs/MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §9) and was promoted to `PRODUCTION`.
+
+**What this does and does not validate**: it's real evidence the architecture can exploit
+relational context when the data has learnable structure. It is **not** evidence about real
+fleet operations — the correlation that makes the label learnable was this phase's own
+engineering choice, not something observed in real customer data, and pretraining-vs-scratch
+and tenant-adapter quality questions remain exactly as open as before (§9 point 3/4). Whether
+Hermes-RPT actually predicts delivery delay well on a real customer's data is still genuinely
+open. See [docs/MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §9 for the full, honest
+retrospective.
 
 ## 5. Required infrastructure
 
@@ -149,11 +163,14 @@ In priority order:
    split: a privileged role for Alembic migrations only, a `NOSUPERUSER NOBYPASSRLS` runtime
    role granted only DML) in both local dev and the deployed Cloud SQL instance, and re-verify
    `tests/integration/test_row_level_security.py` actually passes against both.
-2. **No real customer data has validated any model-quality claim.** Do not deploy Hermes-RPT (or
-   the baselines) to make real predictions that matter until at least one design partner's
-   consented data has gone through the full pipeline and the resulting metrics have been
-   evaluated against the "stop or change direction" criteria in
-   [docs/MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §7.
+2. **No real customer data has validated any model-quality claim.** Hermes-RPT-0.1 (Tiny, scratch)
+   is now servable and, per §4, beat the baselines on synthetic data with a deliberately
+   strengthened label — that is evidence the architecture works, not evidence about real fleet
+   operations. Do not serve either Hermes-RPT or the baselines to make real predictions that
+   matter until at least one design partner's consented data has gone through the full pipeline
+   and the resulting metrics have been evaluated against the "stop or change direction" criteria
+   in [docs/MODEL_RESEARCH_PLAN.md](MODEL_RESEARCH_PLAN.md) §7. This blocker applies to both
+   model families equally.
 3. **`apps/worker` needs a durable queue** before any background job (schema discovery today,
    more later) can be trusted not to silently vanish on a process restart.
 4. **Real secret-provider adapters** (Key Vault / Secret Manager, for *customer* credentials)

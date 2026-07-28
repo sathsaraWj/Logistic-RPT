@@ -40,7 +40,7 @@ from hermes_rpt.features.contract import DELIVERY_DELAY_RISK_CONTRACT
 from hermes_rpt.features.service import FeatureExtractionService
 from hermes_rpt.inference.enums import PredictionStatus
 from hermes_rpt.inference.explanation import PredictionExplanation, generate_explanations
-from hermes_rpt.inference.model_loading import ModelLoader
+from hermes_rpt.inference.model_loading import LoadedHermesRPTModel, ModelLoader
 from hermes_rpt.inference.models import PredictionRequest, PredictionResult
 from hermes_rpt.inference.repository import (
     PredictionRequestRepository,
@@ -48,6 +48,8 @@ from hermes_rpt.inference.repository import (
     PredictionTaskDefinitionRepository,
 )
 from hermes_rpt.inference.risk import risk_level_for
+from hermes_rpt.models.transformer.context import RelationalContextBuilder
+from hermes_rpt.models.transformer.encoding import encode_batch
 from hermes_rpt.monitoring import metrics
 from hermes_rpt.registry.repository import ModelVersionRepository
 from hermes_rpt.tenants.context import TenantContext
@@ -92,6 +94,9 @@ class PredictionService:
     ) -> None:
         self._session = session
         self._extraction = FeatureExtractionService(session, connection_manager=connection_manager)
+        self._context_builder = RelationalContextBuilder(
+            session, connection_manager=connection_manager
+        )
         self._task_definitions = PredictionTaskDefinitionRepository(session)
         self._requests = PredictionRequestRepository(session)
         self._results = PredictionResultRepository(session)
@@ -144,27 +149,50 @@ class PredictionService:
                 raise NoProductionModelError(DELIVERY_DELAY_RISK_CONTRACT.task_key)
             loaded_model = await self._model_loader.load(model_version)
 
-            batch = await self._extraction.extract(
-                DELIVERY_DELAY_RISK_CONTRACT,
-                tenant_context=tenant_context,
-                business_reference=business_reference,
-                prediction_time=prediction_time,
-            )
-            feature_row = [
-                float(value) if (value := batch.features.get(name)) is not None else math.nan
-                for name in _FEATURE_NAMES
-            ]
-            probability = loaded_model.predict_proba(feature_row)
-            explanations = generate_explanations(
-                feature_importance=loaded_model.feature_importance(_FEATURE_NAMES),
-                features=batch.features,
-            )
+            if isinstance(loaded_model, LoadedHermesRPTModel):
+                # Hermes-RPT-0.1 consumes raw relational context, not a scalar feature row — the
+                # same tenant-scoped fetch machinery `FeatureExtractionService` uses (Phase 8's
+                # allowlist/cutoff/mapping-resolution safety), just a different result shape.
+                example = await self._context_builder.build_example(
+                    business_reference=business_reference,
+                    prediction_time=prediction_time,
+                    label=None,  # inference has no label yet
+                    tenant_context=tenant_context,
+                    max_records_per_relation=loaded_model.config.max_records_per_relation,
+                )
+                encoded_batch = encode_batch(
+                    [example],
+                    max_records_per_relation=loaded_model.config.max_records_per_relation,
+                    categorical_vocab_size=loaded_model.config.categorical_vocab_size,
+                )
+                probability = loaded_model.predict_proba(encoded_batch)
+                explanations = generate_explanations(
+                    feature_importance=loaded_model.feature_importance(_FEATURE_NAMES), features={}
+                )
+                mapping_version_id = example.target_mapping_version_id
+            else:
+                batch = await self._extraction.extract(
+                    DELIVERY_DELAY_RISK_CONTRACT,
+                    tenant_context=tenant_context,
+                    business_reference=business_reference,
+                    prediction_time=prediction_time,
+                )
+                feature_row = [
+                    float(value) if (value := batch.features.get(name)) is not None else math.nan
+                    for name in _FEATURE_NAMES
+                ]
+                probability = loaded_model.predict_proba(feature_row)
+                explanations = generate_explanations(
+                    feature_importance=loaded_model.feature_importance(_FEATURE_NAMES),
+                    features=batch.features,
+                )
+                mapping_version_id = batch.lineage.target_mapping_version_id
 
             result = await self._results.add(
                 PredictionResult(
                     prediction_request_id=request.id,
                     model_version_id=model_version.id,
-                    mapping_version_id=batch.lineage.target_mapping_version_id,
+                    mapping_version_id=mapping_version_id,
                     feature_version=DELIVERY_DELAY_RISK_CONTRACT.version,
                     output={
                         "delay_probability": probability,

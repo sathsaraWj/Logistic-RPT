@@ -17,6 +17,7 @@ platform. `tenant_id` itself is never placed into a `RelationalRecord`.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -51,6 +52,11 @@ class RelationalExample:
     label: int | None  # None at inference time
     target: RelationalRecord
     related: tuple[RelationalRecord, ...]
+    # `None` for training/test-fixture examples that don't need lineage; set by `build_example`
+    # for real inference calls, mirroring `FeatureExtractionService`'s `batch.lineage.
+    # target_mapping_version_id` — what a live prediction's `PredictionResult.mapping_version_id`
+    # is recorded against.
+    target_mapping_version_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +156,7 @@ class RelationalContextBuilder:
             label=label,
             target=target,
             related=tuple(related),
+            target_mapping_version_id=target_mapping.schema_mapping.active_version_id,
         )
 
     async def _engine_for(
