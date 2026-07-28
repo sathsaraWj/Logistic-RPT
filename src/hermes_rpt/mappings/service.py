@@ -23,6 +23,7 @@ from hermes_rpt.mappings.enums import MappingState
 from hermes_rpt.mappings.models import MappingVersion, SchemaMapping
 from hermes_rpt.mappings.repository import MappingVersionRepository, SchemaMappingRepository
 from hermes_rpt.mappings.validation import validate_mapping_document
+from hermes_rpt.monitoring import metrics
 from hermes_rpt.ontology.registry import get_ontology
 from hermes_rpt.schemas.introspection import SchemaIntrospectionResult
 from hermes_rpt.schemas.models import SchemaSnapshot
@@ -310,6 +311,9 @@ class MappingService:
             if qualified_source in affected_tables:
                 mapping.suspended_due_to_drift = True
                 suspended.append(mapping)
+                metrics.mapping_suspensions_total.labels(
+                    tenant_id=str(tenant_context.tenant_id)
+                ).inc()
                 await self._audit.record(
                     action="mapping.suspend_due_to_drift",
                     outcome=AuditOutcome.SUCCESS,

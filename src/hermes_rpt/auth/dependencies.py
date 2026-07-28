@@ -75,7 +75,13 @@ async def get_tenant_context(
     without it, every RLS-protected table's `FORCE ROW LEVEL SECURITY` policy sees
     `app.current_tenant_id` as unset and denies all access, including to the requesting
     tenant's own rows. `Depends(get_session)` is cached per-request, so this binds the exact
-    same session instance every downstream repository call in this request will use."""
+    same session instance every downstream repository call in this request will use.
+
+    Stashes the resolved tenant on `request.state.tenant_id`, same pattern
+    `CorrelationIdMiddleware` already uses for `request.state.correlation_id` — so that if a
+    `TenantMismatchError` is raised later in this same request (Phase 15's "cross-tenant access
+    attempt" case), the exception handler can label that metric with *this* tenant (the caller),
+    without ever needing to know which other tenant's resource was almost reached."""
 
     tenant_context = TenantContext(
         tenant_id=claims.tenant_id,
@@ -86,6 +92,7 @@ async def get_tenant_context(
         principal_type=claims.principal_type.value,
     )
     await bind_tenant_for_row_level_security(session, tenant_context)
+    request.state.tenant_id = tenant_context.tenant_id
     return tenant_context
 
 

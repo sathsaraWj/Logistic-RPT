@@ -26,6 +26,7 @@ logic:
 from __future__ import annotations
 
 import math
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -47,6 +48,7 @@ from hermes_rpt.inference.repository import (
     PredictionTaskDefinitionRepository,
 )
 from hermes_rpt.inference.risk import risk_level_for
+from hermes_rpt.monitoring import metrics
 from hermes_rpt.registry.repository import ModelVersionRepository
 from hermes_rpt.tenants.context import TenantContext
 
@@ -132,6 +134,8 @@ class PredictionService:
         )
         await self._session.flush()
 
+        tenant_label = str(tenant_context.tenant_id)
+        request_started_at = time.monotonic()
         try:
             model_version = await self._model_versions.get_production_model(
                 task_definition.id, tenant_context=tenant_context
@@ -187,6 +191,13 @@ class PredictionService:
                     "model_version_id": str(model_version.id),
                 },
             )
+            metrics.prediction_requests_total.labels(tenant_id=tenant_label, status="success").inc()
+            metrics.model_version_usage_total.labels(
+                tenant_id=tenant_label, model_version_id=str(model_version.id)
+            ).inc()
+            metrics.prediction_distribution.labels(
+                tenant_id=tenant_label, model_version_id=str(model_version.id)
+            ).observe(probability)
         except Exception:
             request.status = PredictionStatus.FAILED
             await self._session.flush()
@@ -200,7 +211,12 @@ class PredictionService:
                 resource_id=request.id,
                 correlation_id=tenant_context.correlation_id,
             )
+            metrics.prediction_requests_total.labels(tenant_id=tenant_label, status="error").inc()
             raise
+        finally:
+            metrics.prediction_latency_seconds.labels(tenant_id=tenant_label).observe(
+                time.monotonic() - request_started_at
+            )
 
         return PredictionResponse(
             prediction_id=result.id,

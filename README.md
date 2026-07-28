@@ -19,6 +19,8 @@ isn't implemented.
 * [docs/adr/](docs/adr/) — why things are built the way they are.
 * [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the GCP/Cloud Run deployment and its GitHub Actions
   automation, including what's deliberately out of scope for it.
+* [docs/MONITORING.md](docs/MONITORING.md) — metrics, drift detection, and the
+  [runbooks](docs/runbooks/) for incidents, schema drift, and model rollback.
 * [TASKS.md](TASKS.md) — phased, checkable progress.
 
 ## Requirements

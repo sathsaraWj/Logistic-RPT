@@ -21,18 +21,25 @@ from hermes_rpt.common.settings import Settings
 
 _REDACTED = "***REDACTED***"
 
-# Key names that are always redacted regardless of value shape.
+# Key names that are always redacted regardless of value shape. Covers both secrets (Phase 4)
+# and personal data (Phase 15: "logs must redact personal and secret data") — an `email` or
+# `display_name` field is exactly as unwelcome in a log line as a password is, even though it
+# isn't a credential.
 _SENSITIVE_KEYS = re.compile(
     r"(password|secret|token|credential|api[_-]?key|authorization|access[_-]?key|"
-    r"connection[_-]?string|dsn|private[_-]?key)",
+    r"connection[_-]?string|dsn|private[_-]?key|"
+    r"email|display[_-]?name|full[_-]?name|phone[_-]?number)",
     re.IGNORECASE,
 )
 
-# Value shapes that look like a credential-bearing connection string / bearer token even if the
-# key name didn't hint at it, e.g. `postgresql://user:pass@host/db` or `Bearer eyJ...`.
+# Value shapes that look like a credential-bearing connection string / bearer token, or personal
+# data, even if the key name didn't hint at it — e.g. `postgresql://user:pass@host/db`,
+# `Bearer eyJ...`, or an email address embedded in free text (an error message that happened to
+# interpolate `str(user)`, for instance).
 _SENSITIVE_VALUE_PATTERNS = (
     re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^:\s]+:[^@\s]+@"),  # scheme://user:pass@
     re.compile(r"Bearer\s+[A-Za-z0-9\-_.]+", re.IGNORECASE),
+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),  # email address
 )
 
 

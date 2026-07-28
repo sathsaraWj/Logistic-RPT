@@ -39,6 +39,7 @@ from hermes_rpt.features.compiler import fetch_rows_in_range, identity_field_nam
 from hermes_rpt.features.contract import FeatureContract
 from hermes_rpt.features.resolver import MappingResolver, ResolvedMapping
 from hermes_rpt.features.service import FeatureExtractionService, TargetRowNotFoundError
+from hermes_rpt.monitoring import metrics
 from hermes_rpt.schemas.models import SchemaSnapshot
 from hermes_rpt.schemas.repository import SchemaSnapshotRepository
 from hermes_rpt.tenants.context import TenantContext
@@ -201,6 +202,11 @@ class DatasetBuildService:
             row_count=len(dataset_rows),
             issues=tuple(issue for issue in quality_issues if issue is not None),
         )
+        tenant_label = str(tenant_context.tenant_id)
+        for issue in quality_report.issues:
+            metrics.invalid_data_rate_total.labels(
+                tenant_id=tenant_label, check=issue.check, severity=issue.severity.value
+            ).inc(issue.count)
 
         splits = split_temporally(dataset_rows, strategy=definition.split_strategy)
         feature_rows = [row.features for row in dataset_rows]
@@ -210,6 +216,11 @@ class DatasetBuildService:
             feature_rows, feature_names=tuple(f.name for f in contract.features)
         )
         label_statistics = compute_label_statistics(labels)
+        for stat in feature_statistics:
+            total = stat.count + stat.missing_count
+            metrics.missing_feature_rate.labels(
+                tenant_id=tenant_label, feature_name=stat.feature_name
+            ).set(stat.missing_count / total if total else 0.0)
 
         # resolve_target() only ever returns a mapping with active_version_id set
         assert target.schema_mapping.active_version_id is not None  # nosec B101

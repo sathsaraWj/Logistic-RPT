@@ -74,3 +74,22 @@ class PredictionResult(Base, UUIDPKMixin, TimestampMixin, TenantOwnedMixin):
     feature_version: Mapped[str] = mapped_column(String(50), nullable=False)
     output: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     explanations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+
+
+class PredictionOutcome(Base, UUIDPKMixin, TimestampMixin, TenantOwnedMixin):
+    """ "Precision/recall when labels arrive" (Phase 15) — the actual, later-known outcome for a
+    prediction that was already made and returned. Recorded separately from `PredictionResult`
+    (never mutates the original prediction row — the point is to compare what was predicted
+    against what actually happened, not to overwrite history) and only ever by explicit,
+    audited call, never inferred automatically."""
+
+    __tablename__ = "prediction_outcomes"
+    __table_args__ = (
+        UniqueConstraint("prediction_result_id", name="uq_prediction_outcome_result"),
+    )
+
+    prediction_result_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("prediction_results.id", ondelete="CASCADE"), nullable=False
+    )
+    actual_label: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    recorded_by_principal_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)

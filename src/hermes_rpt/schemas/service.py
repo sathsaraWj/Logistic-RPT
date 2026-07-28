@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from hermes_rpt.audit.enums import AuditOutcome
 from hermes_rpt.audit.service import AuditService
 from hermes_rpt.connectors.service import ConnectionLifecycleManager
+from hermes_rpt.monitoring import metrics
 from hermes_rpt.schemas.drift import DriftEvent, compare_snapshots
 from hermes_rpt.schemas.enums import DiscoveryStatus
 from hermes_rpt.schemas.fingerprint import compute_fingerprints
@@ -132,6 +133,10 @@ class SchemaDiscoveryService:
                 if previous is not None
                 else None
             )
+            if previous is not None and previous.schema_fingerprint != schema_fingerprint:
+                metrics.schema_fingerprint_changes_total.labels(
+                    tenant_id=str(tenant_context.tenant_id)
+                ).inc()
             snapshot.status = DiscoveryStatus.COMPLETED
             snapshot.error = None
         except Exception as exc:  # noqa: BLE001 - captured as a safe summary, then re-raised

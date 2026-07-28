@@ -25,6 +25,7 @@ from hermes_rpt.auth.errors import AuthenticationError, AuthorizationError
 from hermes_rpt.common.db import get_sessionmaker
 from hermes_rpt.common.logging import get_logger
 from hermes_rpt.common.repository import TenantMismatchError
+from hermes_rpt.monitoring import metrics
 
 logger = get_logger(__name__)
 
@@ -46,6 +47,7 @@ async def _record_audit_event_best_effort(request: Request, /, **kwargs: object)
 async def authentication_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, AuthenticationError)  # nosec B101 - narrows type; FastAPI-guaranteed
     logger.warning("authentication_failed", reason=exc.reason, path=request.url.path)
+    metrics.authentication_failures_total.labels(reason=exc.reason).inc()
 
     await _record_audit_event_best_effort(
         request,
@@ -71,6 +73,9 @@ async def authorization_error_handler(request: Request, exc: Exception) -> JSONR
         path=request.url.path,
         tenant_id=str(exc.tenant_id) if exc.tenant_id else None,
     )
+    metrics.authorization_failures_total.labels(
+        tenant_id=str(exc.tenant_id) if exc.tenant_id else "unknown", reason=exc.reason
+    ).inc()
 
     await _record_audit_event_best_effort(
         request,
@@ -88,11 +93,29 @@ async def authorization_error_handler(request: Request, exc: Exception) -> JSONR
     )
 
 
-def tenant_mismatch_handler(request: Request, exc: Exception) -> JSONResponse:
+async def tenant_mismatch_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, TenantMismatchError)  # nosec B101 - narrows type; FastAPI-guaranteed
     # Deliberately 404, not 403 — see TenantMismatchError docstring: the platform must not
     # confirm to a caller that a resource belonging to another tenant exists.
     logger.info("tenant_resource_mismatch", path=request.url.path)
+
+    # request.state.tenant_id is the *caller's own* tenant (set by get_tenant_context once auth
+    # succeeded) — never the tenant the almost-reached resource actually belongs to, which this
+    # handler must not reveal even internally in a metric label.
+    caller_tenant_id = getattr(request.state, "tenant_id", None)
+    metrics.cross_tenant_access_attempts_total.labels(
+        tenant_id=str(caller_tenant_id) if caller_tenant_id else "unknown"
+    ).inc()
+
+    await _record_audit_event_best_effort(
+        request,
+        action="tenant.cross_tenant_access_attempt",
+        outcome=AuditOutcome.DENIED,
+        tenant_id=caller_tenant_id,
+        correlation_id=_correlation_id(request),
+        details={"path": request.url.path},
+    )
+
     return JSONResponse(
         status_code=status.HTTP_404_NOT_FOUND,
         content={"detail": "Not found."},

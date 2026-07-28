@@ -593,11 +593,45 @@ clean across `src apps scripts tests`.
 
 ## Phase 15 — Monitoring and drift detection
 
-- [ ] Security, data/schema, and model monitoring per prompts.txt; tenant-scoped metrics
-- [ ] No high-cardinality raw-ID labels; redaction in logs; internal-only tenant-identifying
-      alerts
-- [ ] Incident, schema-drift, and model-rollback runbooks
-- [ ] Metric isolation and redaction tests
+- [x] Security, data/schema, and model monitoring per prompts.txt; tenant-scoped metrics —
+      `hermes_rpt.monitoring.metrics` (Prometheus-compatible, dedicated `CollectorRegistry`),
+      instrumented at the real failure/event sites: auth/authz/cross-tenant handlers
+      (`apps/api/exception_handlers.py`), secret resolution + connection usage
+      (`hermes_rpt.connectors.service`), disallowed query attempts
+      (`hermes_rpt.features.service.FeatureExtractionService.extract`), schema fingerprint
+      changes + mapping suspension (`hermes_rpt.schemas.service`, `hermes_rpt.mappings.
+      service`), missing-feature-rate + invalid-data-rate (`hermes_rpt.datasets.builder`),
+      prediction volume/latency/error/distribution/model-version-usage
+      (`hermes_rpt.inference.service.PredictionService.predict`). Feature/label distribution
+      drift scoring (`hermes_rpt.monitoring.drift`) is implemented and tested but not yet
+      auto-scheduled — see docs/MONITORING.md §4/§8 for why. "Precision/recall when labels
+      arrive" is new domain logic, not just a metric: `PredictionOutcome` (migration
+      `978402aae411`) + `hermes_rpt.monitoring.outcomes.OutcomeService`, exposed via
+      `POST /v1/monitoring/predictions/{id}/outcome`.
+      Tenant-scoped summary (`GET /v1/monitoring/summary`,
+      `hermes_rpt.monitoring.service.MonitoringService`) queries tenant-scoped repositories
+      directly rather than reading the process-wide Prometheus counters — the same isolation
+      mechanism every other tenant-facing read in this platform uses, deliberately kept
+      separate from the operator-only `GET /metrics` scrape endpoint (`ScopeName.
+      MONITORING_READ`) — see docs/MONITORING.md §1 for the known gap in that scope's
+      enforcement (no genuine platform-wide credential type exists yet).
+- [x] No high-cardinality raw-ID labels; redaction in logs; internal-only tenant-identifying
+      alerts — label-safety rules enforced structurally (`hermes_rpt.monitoring.metrics`'s
+      docstring + `test_every_metric_only_uses_allowed_label_names`); log redaction extended to
+      personal data (email/display_name/phone-shaped keys and an email-value pattern), not just
+      secrets (`hermes_rpt.common.logging`); `tenant_mismatch_handler` labels its metric with
+      the *caller's* tenant only, never the tenant whose resource was almost reached.
+- [x] Incident, schema-drift, and model-rollback runbooks — docs/runbooks/{INCIDENT_RUNBOOK,
+      SCHEMA_DRIFT_RUNBOOK,MODEL_ROLLBACK_RUNBOOK}.md, docs/MONITORING.md
+- [x] Metric isolation and redaction tests — tests/security/test_monitoring_isolation.py,
+      tests/unit/test_monitoring_{metrics,drift,outcomes}.py
+
+`tests/unit/test_tenant_session.py` / `tests/security/test_tenant_rls_binding.py` predate this
+phase (added during GCP deployment troubleshooting: `bind_tenant_for_row_level_security` existed
+but was never wired into the request pipeline, and its `SET LOCAL ... = :param` was invalid
+asyncpg syntax — see docs/DEPLOYMENT.md §5 and git history for the two fix commits) but are
+exactly the kind of coverage this phase's "metric isolation and redaction tests" line item is
+about, so they're listed here too rather than only under Phase 14's deployment work.
 
 ## Phase 16 — Security hardening
 

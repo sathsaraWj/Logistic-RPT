@@ -16,6 +16,8 @@ from hermes_rpt.connectors.service import ConnectionLifecycleManager
 from hermes_rpt.features.service import FeatureExtractionService
 from hermes_rpt.inference.model_loading import ModelLoader
 from hermes_rpt.inference.service import PredictionService
+from hermes_rpt.monitoring.outcomes import OutcomeService
+from hermes_rpt.monitoring.service import MonitoringService
 from hermes_rpt.schemas.service import SchemaDiscoveryService
 from hermes_rpt.secrets.provider import get_secret_provider
 
@@ -76,3 +78,17 @@ def get_prediction_service(
 
 
 PredictionServiceDep = Annotated[PredictionService, Depends(get_prediction_service)]
+
+
+def get_monitoring_service(session: DbSessionDep) -> MonitoringService:
+    return MonitoringService(session)
+
+
+MonitoringServiceDep = Annotated[MonitoringService, Depends(get_monitoring_service)]
+
+
+def get_outcome_service(session: DbSessionDep) -> OutcomeService:
+    return OutcomeService(session)
+
+
+OutcomeServiceDep = Annotated[OutcomeService, Depends(get_outcome_service)]

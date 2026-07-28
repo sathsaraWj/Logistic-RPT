@@ -6,6 +6,7 @@ from sqlalchemy import and_, select
 
 from hermes_rpt.common.repository import BaseRepository, TenantScopedRepository
 from hermes_rpt.inference.models import (
+    PredictionOutcome,
     PredictionRequest,
     PredictionResult,
     PredictionTaskDefinition,
@@ -38,6 +39,46 @@ class PredictionRequestRepository(TenantScopedRepository[PredictionRequest]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+
+class PredictionOutcomeRepository(TenantScopedRepository[PredictionOutcome]):
+    model = PredictionOutcome
+
+    async def get_by_prediction_result_id(
+        self, prediction_result_id: uuid.UUID, *, tenant_context: TenantContext
+    ) -> PredictionOutcome | None:
+        stmt = select(PredictionOutcome).where(
+            and_(
+                PredictionOutcome.tenant_id == tenant_context.tenant_id,
+                PredictionOutcome.prediction_result_id == prediction_result_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_labeled_results_for_model(
+        self, model_version_id: uuid.UUID, *, tenant_context: TenantContext
+    ) -> list[tuple[PredictionResult, PredictionOutcome]]:
+        """Every `(result, outcome)` pair this tenant has for a given model version — the input
+        `MonitoringService.compute_realized_model_metrics` needs for precision/recall/calibration
+        drift. Tenant-scoped on both sides of the join, not just the outcome table."""
+
+        stmt = (
+            select(PredictionResult, PredictionOutcome)
+            .join(
+                PredictionOutcome,
+                PredictionOutcome.prediction_result_id == PredictionResult.id,
+            )
+            .where(
+                and_(
+                    PredictionResult.tenant_id == tenant_context.tenant_id,
+                    PredictionOutcome.tenant_id == tenant_context.tenant_id,
+                    PredictionResult.model_version_id == model_version_id,
+                )
+            )
+        )
+        result = await self.session.execute(stmt)
+        return [(row.PredictionResult, row.PredictionOutcome) for row in result]
 
 
 class PredictionResultRepository(TenantScopedRepository[PredictionResult]):

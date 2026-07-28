@@ -25,7 +25,8 @@ from hermes_rpt.connectors.repository import (
     CustomerDatabaseConnectionRepository,
     DatabaseCredentialReferenceRepository,
 )
-from hermes_rpt.secrets.provider import SecretProvider
+from hermes_rpt.monitoring import metrics
+from hermes_rpt.secrets.provider import SecretNotFoundError, SecretProvider
 from hermes_rpt.tenants.context import TenantContext
 
 
@@ -104,7 +105,13 @@ class ConnectionLifecycleManager:
         credential = await self._credentials.require(
             connection.credential_reference_id, tenant_context=tenant_context
         )
-        password = await self._secret_provider.resolve(credential.reference_key)
+        try:
+            password = await self._secret_provider.resolve(credential.reference_key)
+        except SecretNotFoundError:
+            metrics.secret_resolution_failures_total.labels(
+                tenant_id=str(tenant_context.tenant_id)
+            ).inc()
+            raise
         return ConnectionTarget(
             host=connection.host,
             port=connection.port,
@@ -146,6 +153,9 @@ class ConnectionLifecycleManager:
         else:
             connection.status = ConnectionStatus.ERROR
             connection.last_error = result.error_summary
+            metrics.unexpected_connection_usage_total.labels(
+                tenant_id=str(tenant_context.tenant_id), reason="validation_failed"
+            ).inc()
 
         await self._audit.record(
             action="connection.validate",
@@ -164,6 +174,9 @@ class ConnectionLifecycleManager:
     ) -> CustomerDatabaseConnection:
         connection = await self._connections.require(connection_id, tenant_context=tenant_context)
         if connection.last_validated_at is None:
+            metrics.unexpected_connection_usage_total.labels(
+                tenant_id=str(tenant_context.tenant_id), reason="enable_before_validation"
+            ).inc()
             raise ConnectionNotReadyError(
                 "Connection must be successfully validated at least once before it can be enabled"
             )

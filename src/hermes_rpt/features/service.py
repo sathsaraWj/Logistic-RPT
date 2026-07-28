@@ -14,19 +14,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from hermes_rpt.audit.enums import AuditOutcome
 from hermes_rpt.audit.service import AuditService
+from hermes_rpt.connectors.errors import DisallowedObjectError, WriteStatementRejectedError
 from hermes_rpt.connectors.models import CustomerDatabaseConnection
 from hermes_rpt.connectors.repository import CustomerDatabaseConnectionRepository
 from hermes_rpt.connectors.service import ConnectionLifecycleManager
 from hermes_rpt.features.compiler import compile_and_run_related_feature, fetch_target_row
 from hermes_rpt.features.contract import FeatureContract, FeatureKind
+from hermes_rpt.features.cost_guard import QueryCostExceededError
 from hermes_rpt.features.derive import apply_derive
 from hermes_rpt.features.lineage import FeatureBatch, FeatureLineageRecord, MissingFeatureReason
 from hermes_rpt.features.normalizer import normalize
 from hermes_rpt.features.planner import QueryPlanReport, build_query_plan
 from hermes_rpt.features.resolver import MappingResolver, ResolvedMapping
+from hermes_rpt.monitoring import metrics
 from hermes_rpt.schemas.models import SchemaSnapshot
 from hermes_rpt.schemas.repository import SchemaSnapshotRepository
 from hermes_rpt.tenants.context import TenantContext
+
+_DISALLOWED_QUERY_ERRORS = (
+    DisallowedObjectError,
+    WriteStatementRejectedError,
+    QueryCostExceededError,
+)
 
 
 class TargetRowNotFoundError(Exception):
@@ -54,6 +63,13 @@ class FeatureExtractionService:
             snapshot.connection_id, tenant_context=tenant_context
         )
         return connection, snapshot
+
+    def _record_disallowed_query_attempt(
+        self, exc: Exception, *, tenant_context: TenantContext
+    ) -> None:
+        metrics.disallowed_query_attempts_total.labels(
+            tenant_id=str(tenant_context.tenant_id), reason=type(exc).__name__
+        ).inc()
 
     async def _resolve_related_entities(
         self, contract: FeatureContract, *, tenant_context: TenantContext
@@ -101,14 +117,18 @@ class FeatureExtractionService:
             )
             if field
         }
-        target_row = await fetch_target_row(
-            target_engine,
-            target.document,
-            business_reference=business_reference,
-            needed_fields=needed_target_fields,
-            schema_allowlist=target_connection.schema_allowlist,
-            table_allowlist=target_connection.table_allowlist,
-        )
+        try:
+            target_row = await fetch_target_row(
+                target_engine,
+                target.document,
+                business_reference=business_reference,
+                needed_fields=needed_target_fields,
+                schema_allowlist=target_connection.schema_allowlist,
+                table_allowlist=target_connection.table_allowlist,
+            )
+        except _DISALLOWED_QUERY_ERRORS as exc:
+            self._record_disallowed_query_attempt(exc, tenant_context=tenant_context)
+            raise
         if target_row is None:
             raise TargetRowNotFoundError(
                 f"No {contract.target_entity} row found for "
@@ -176,15 +196,19 @@ class FeatureExtractionService:
             _, related_engine = await self._connection_manager.get_or_create_engine(
                 related_connection.id, tenant_context=tenant_context
             )
-            raw = await compile_and_run_related_feature(
-                related_engine,
-                feature,
-                related.document,
-                join_value=join_value,
-                prediction_time=prediction_time,
-                schema_allowlist=related_connection.schema_allowlist,
-                table_allowlist=related_connection.table_allowlist,
-            )
+            try:
+                raw = await compile_and_run_related_feature(
+                    related_engine,
+                    feature,
+                    related.document,
+                    join_value=join_value,
+                    prediction_time=prediction_time,
+                    schema_allowlist=related_connection.schema_allowlist,
+                    table_allowlist=related_connection.table_allowlist,
+                )
+            except _DISALLOWED_QUERY_ERRORS as exc:
+                self._record_disallowed_query_attempt(exc, tenant_context=tenant_context)
+                raise
             if feature.derive is not None:
                 # RELATED_LATEST_VALUE features may need a post-fetch transform (e.g.
                 # vehicle_age_years: fetch Vehicle.acquired_at, then derive an age in years) —

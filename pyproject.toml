@@ -16,6 +16,7 @@ dependencies = [
   "asyncpg>=0.31,<0.32",
   "uvicorn[standard]>=0.51,<0.52",
   "structlog>=26.1,<27",
+  "prometheus-client>=0.24,<0.25",
   "pyjwt[crypto]>=2.13,<3",
   "python-multipart>=0.0.32,<0.1",
   "httpx>=0.28,<0.29",

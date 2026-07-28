@@ -20,6 +20,7 @@ class ScopeName(StrEnum):
     MODEL_TRAIN = "model:train"
     MODEL_PROMOTE = "model:promote"
     AUDIT_READ = "audit:read"
+    MONITORING_READ = "monitoring:read"
 
 
 class PrincipalType(StrEnum):

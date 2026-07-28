@@ -20,6 +20,7 @@ from apps.api.routers import (
     features,
     mappings,
     memberships,
+    monitoring,
     predictions,
     schema_discovery,
 )
@@ -78,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(mappings.router)
     app.include_router(features.router)
     app.include_router(predictions.router)
+    app.include_router(monitoring.router)
 
     @app.get("/health/live", tags=["health"])
     async def health_live() -> dict[str, str]:
