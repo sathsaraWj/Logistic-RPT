@@ -18,8 +18,14 @@ interfaces").
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
 from dataclasses import dataclass
+
+# Must be set before any mlflow call that might trigger its telemetry client (e.g. the first
+# `mlflow.sklearn.load_model`) — otherwise loading a model artifact pays for an unrelated,
+# unnecessary outbound network round-trip inside this timeout-guarded path.
+os.environ.setdefault("MLFLOW_DISABLE_TELEMETRY", "true")
 
 import mlflow
 
@@ -79,7 +85,13 @@ class ModelLoader:
         self,
         *,
         mlflow_tracking_uri: str | None = None,
-        load_timeout_seconds: float = 10.0,
+        # A cold `mlflow.sklearn.load_model` for the *first* model version loaded in a process
+        # pays a highly variable, sometimes tens-of-seconds cost (scikit-learn/skops type-registry
+        # construction, artifact download) on top of the actual deserialization — 10s measured as
+        # too tight even after warming the module import at startup (see apps.api.main.lifespan).
+        # Per-model-version results are cached, so this cost is paid at most once per model
+        # version per process, not on every prediction.
+        load_timeout_seconds: float = 60.0,
         retry_config: RetryConfig | None = None,
         circuit_breaker: CircuitBreaker | None = None,
     ) -> None:

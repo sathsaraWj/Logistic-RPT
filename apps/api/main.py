@@ -5,6 +5,7 @@ Run locally with: `uv run uvicorn apps.api.main:app --reload`
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -33,12 +34,23 @@ from hermes_rpt.common.settings import get_settings
 _START_TIME = time.monotonic()
 
 
+def _warm_model_loading_imports() -> None:
+    """`mlflow.sklearn` (and, transitively, torch's operator-overload registration and skops'
+    type registry) is not imported until the first `ModelLoader.load()` call — cold, that import
+    alone takes tens of seconds on this stack, which blows straight through
+    `ModelLoader`'s per-request load timeout if it happens to land on the first prediction
+    request. Paying that cost once here, during startup/readiness, keeps it off every request's
+    timeout budget instead."""
+    import mlflow.sklearn  # noqa: F401
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings)
     logger = get_logger(__name__)
     logger.info("startup", environment=settings.environment, service=settings.service_name)
+    await asyncio.to_thread(_warm_model_loading_imports)
     yield
     logger.info("shutdown")
 
