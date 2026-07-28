@@ -8,6 +8,7 @@ database is unreachable, so `make test-unit` / CI's default job never depends on
 from __future__ import annotations
 
 import io
+import os
 import uuid
 
 import pytest
@@ -28,16 +29,19 @@ from tests.factories import make_tenant, make_user
 
 pytestmark = pytest.mark.asyncio
 
+# Same env vars docker-compose.yml/docs/DEMO.md read, same defaults — lets these tests run
+# against a port-remapped stack (e.g. when the defaults are already taken by something else on
+# the machine) without touching the common case.
 _ALPHA = {
     "host": "localhost",
-    "port": 5433,
+    "port": int(os.environ.get("TENANT_ALPHA_DB_PORT", "5433")),
     "database": "tenant_alpha",
     "username": "alpha_app",
     "password": "alpha-dev-password",  # noqa: S105 - docker-compose dev fixture, not a real secret
 }
 _BETA = {
     "host": "localhost",
-    "port": 5434,
+    "port": int(os.environ.get("TENANT_BETA_DB_PORT", "5434")),
     "database": "tenant_beta",
     "username": "beta_app",
     "password": "beta-dev-password",  # noqa: S105 - docker-compose dev fixture, not a real secret
@@ -69,7 +73,14 @@ async def require_tenant_databases() -> None:
 def _register_kwargs(target: dict[str, object]) -> dict[str, object]:
     """Adapts the {host, port, database, username, password} shape (matches
     sqlalchemy.engine.URL.create's parameter names, used by `_reachable`) to
-    `ConnectionLifecycleManager.register_connection`'s parameter names."""
+    `ConnectionLifecycleManager.register_connection`'s parameter names.
+
+    `tls_mode="disable"`: `register_connection`'s own default is `"require"`, but the
+    docker-compose `tenant-alpha-db`/`tenant-beta-db` fixtures are plain `postgres:16-alpine`
+    with no SSL configured server-side — requesting SSL against them fails outright
+    ("PostgreSQL server rejected SSL upgrade"), a real, previously-uncaught gap in these tests
+    (Docker was unavailable in this environment until Phase 17, so they'd never actually been
+    run end to end before — see TASKS.md's Phase 4 follow-up note)."""
 
     return {
         "host": target["host"],
@@ -77,6 +88,7 @@ def _register_kwargs(target: dict[str, object]) -> dict[str, object]:
         "database_name": target["database"],
         "username": target["username"],
         "secret_value": target["password"],
+        "tls_mode": "disable",
     }
 
 

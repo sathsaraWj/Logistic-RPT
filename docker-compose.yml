@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: hermes
       POSTGRES_DB: hermes_control
     ports:
-      - "5432:5432"
+      - "${CONTROL_PLANE_DB_PORT:-5432}:5432"
     volumes:
       - hermes_control_db_data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: docker/mlflow.Dockerfile
     ports:
-      - "5000:5000"
+      - "${MLFLOW_PORT:-5000}:5000"
     volumes:
       - hermes_mlflow_data:/mlflow
     command: >
@@ -45,7 +45,7 @@ services:
       POSTGRES_PASSWORD: alpha-dev-password
       POSTGRES_DB: tenant_alpha
     ports:
-      - "5433:5432"
+      - "${TENANT_ALPHA_DB_PORT:-5433}:5432"
     volumes:
       - hermes_tenant_alpha_data:/var/lib/postgresql/data
       - ./docker/postgres-fixtures/alpha:/docker-entrypoint-initdb.d:ro
@@ -62,7 +62,7 @@ services:
       POSTGRES_PASSWORD: beta-dev-password
       POSTGRES_DB: tenant_beta
     ports:
-      - "5434:5432"
+      - "${TENANT_BETA_DB_PORT:-5434}:5432"
     volumes:
       - hermes_tenant_beta_data:/var/lib/postgresql/data
       - ./docker/postgres-fixtures/beta:/docker-entrypoint-initdb.d:ro

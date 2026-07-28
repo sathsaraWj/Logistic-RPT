@@ -1,8 +1,20 @@
 # Security Review (Phase 16)
 
-Status: **Complete for this pass.** No Critical or High-severity finding remains open — see §2.
-A small number of Medium/Low findings are deliberately deferred, each with a stated reason (§3).
-This document is the artifact [docs/THREAT_MODEL.md](THREAT_MODEL.md) §7 commits to producing.
+Status: **One Critical finding open** (§2a, discovered in Phase 17 — see below); all Phase 16
+findings otherwise closed (§2), a small number of Medium/Low findings deliberately deferred with
+a stated reason each (§3). This document is the artifact
+[docs/THREAT_MODEL.md](THREAT_MODEL.md) §7 commits to producing.
+
+**Update (Phase 17):** while building the end-to-end demonstration
+([docs/DEMO.md](DEMO.md)), running `tests/integration/test_row_level_security.py` for the first
+time ever (Docker had never been available in this environment before Phase 17 — see TASKS.md's
+Phase 4 follow-up note) surfaced a genuinely Critical, previously-undiscovered gap: **the
+database role this platform connects as has `BYPASSRLS`, making every PostgreSQL Row-Level
+Security policy in the codebase a structural no-op.** See §2a. This was not caught by Phase 16's
+review because that review read code and migrations, not live database role attributes — nothing
+short of actually running a real-Postgres RLS test (which nothing had, until Phase 17) surfaces
+this class of gap. Flagging honestly rather than leaving the "Complete" status from before this
+update stand uncorrected.
 
 ## 1. Method
 
@@ -15,6 +27,77 @@ messages), plus my own targeted follow-up while implementing the fixes below (fi
 `audit_events` RLS-policy bug were found this way, not by the three audits). Each finding below
 is stated as: what was found, why it matters, how it was fixed (or why it's deferred), and where
 the regression test lives.
+
+## 2a. Critical finding — open, discovered in Phase 17
+
+**The connecting database role bypasses Row-Level Security entirely, in both local dev and
+(very likely) production.**
+
+`docker-compose.yml`'s `control-plane-db` service sets `POSTGRES_USER: hermes` — the Postgres
+Docker image's convention is that this initial user is created as an actual database
+**superuser**. Querying the live role directly confirms it:
+
+```sql
+SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'hermes';
+-- ('hermes', true, true)
+```
+
+PostgreSQL's own semantics: `BYPASSRLS` overrides `FORCE ROW LEVEL SECURITY` unconditionally —
+there is no policy or `FORCE` setting that can constrain a role with `BYPASSRLS`. Every
+`ENABLE ROW LEVEL SECURITY` / `FORCE ROW LEVEL SECURITY` / `CREATE POLICY tenant_isolation`
+statement in `migrations/versions/91b14d4e87dc_enable_row_level_security.py` and
+`b48a21a99ef0_fix_audit_events_null_tenant_rls.py` — the entire RLS defense-in-depth layer
+[docs/adr/0003-tenant-isolation-defense-in-depth.md](adr/0003-tenant-isolation-defense-in-depth.md)
+describes — has never actually constrained a single query the application has ever run, in any
+environment, because the application always connects as this same role.
+
+This does **not** mean cross-tenant data exposure has occurred: the *primary* control
+(`TenantScopedRepository`'s application-layer `tenant_id` filtering, ADR-0003) is unaffected and
+has its own extensive test coverage (`tests/security/test_tenant_isolation.py` and others) that
+does not depend on RLS at all. What's actually true is narrower but still serious: **the specific
+guarantee "if application-layer filtering is ever forgotten on some code path, RLS independently
+still stops the leak" does not currently hold** — there is no second layer, only the first one.
+
+**Why Phase 16's review didn't catch this**: that review read source code, migrations, and ORM
+models — every one of which correctly implements RLS as designed. Nothing about the *role
+attribute* granted at container-init time is visible from any of that; it only surfaces by
+actually connecting and querying `pg_roles`, or by running a real adversarial RLS test against a
+live database. `tests/integration/test_row_level_security.py` is exactly that test — it existed
+since an earlier phase but had *never actually been executed* before Phase 17 (Docker was
+unavailable in this environment until then; see TASKS.md's Phase 4 follow-up note). It now fails,
+correctly, for precisely this reason — it has not been weakened or skipped to hide the finding.
+
+**Very likely also true in production**: [docs/DEPLOYMENT.md](DEPLOYMENT.md) §4 shows the
+deployed Cloud Run service connects to Cloud SQL as a role also named `hermes`. Cloud SQL's
+managed Postgres does not grant literal OS-level superuser, but the role Cloud SQL creates for
+you at instance setup is typically placed in the `cloudsqlsuperuser` group role, which — per
+Cloud SQL's own documented role hierarchy — **does include `BYPASSRLS`**. This has not been
+verified against the live `hermes-rpt-demo` Cloud SQL instance from this environment (no access
+here) — flagged for out-of-band verification, not confirmed, but the local-dev finding above
+makes it the reasonable working assumption until checked.
+
+**What a real fix looks like** (not implemented in this pass — see below for why): a
+two-role split — a privileged role (superuser or at least `CREATEDB`/schema-owner, `NOBYPASSRLS`
+does nothing for a role that's otherwise superuser, so this role's migrations still run
+unconstrained, which is fine, it's not the one serving requests) used only for running Alembic
+migrations, and a separate, deliberately unprivileged runtime role (`NOSUPERUSER NOBYPASSRLS`,
+granted only `SELECT`/`INSERT`/`UPDATE`/`DELETE` via `ALTER DEFAULT PRIVILEGES`) that
+`apps/api`/`apps/worker`/`apps/trainer` actually connect as. This needs corresponding changes to
+`docker-compose.yml` (a custom init script creating the second role), `docs/DEPLOYMENT.md` §3/§4
+(a second Cloud SQL user, explicitly *not* `cloudsqlsuperuser`, plus the corresponding Secret
+Manager entry and IAM), and careful end-to-end testing that every code path's required privilege
+is actually granted to the restricted role before cutting the app over to it.
+
+**Why this is documented rather than fixed in this same pass**: implementing and *safely*
+verifying a two-role privilege split (getting `ALTER DEFAULT PRIVILEGES` exactly right so no
+runtime code path silently starts failing on a missing grant, re-testing the full test suite and
+the Phase 17 demo against the restricted role, and — separately — verifying and fixing the actual
+Cloud SQL production role) is a substantial, higher-risk piece of infrastructure work in its own
+right, not a small contained code change like this document's other findings. Attempting it
+hastily risks either leaving it subtly broken or breaking the working system to fix a
+defense-in-depth *second* layer while the primary layer remains sound and well-tested. Recorded
+here as the top-priority follow-up item — see TASKS.md's Phase 17 section — rather than silently
+left for someone to rediscover.
 
 ## 2. Critical / High findings — all fixed
 

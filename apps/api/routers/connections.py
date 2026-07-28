@@ -134,6 +134,7 @@ async def validate_connection(
 ) -> ConnectionResponse:
     connection = await manager.validate_connection(connection_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(connection)
     return ConnectionResponse.from_orm_connection(connection)
 
 
@@ -146,6 +147,7 @@ async def enable_connection(
 ) -> ConnectionResponse:
     connection = await manager.enable_connection(connection_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(connection)
     return ConnectionResponse.from_orm_connection(connection)
 
 
@@ -158,6 +160,7 @@ async def disable_connection(
 ) -> ConnectionResponse:
     connection = await manager.disable_connection(connection_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(connection)
     return ConnectionResponse.from_orm_connection(connection)
 
 
@@ -173,6 +176,7 @@ async def rotate_secret(
         connection_id, tenant_context=tenant_context, new_secret_value=body.new_secret_value
     )
     await session.commit()
+    await session.refresh(connection)
     return ConnectionResponse.from_orm_connection(connection)
 
 

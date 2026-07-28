@@ -1,6 +1,8 @@
 .PHONY: install lint format typecheck test test-unit test-integration security-check \
         docs-check ci up down logs migrate run-api run-worker clean build-synthetic-dataset \
-        train-baselines train-hermes-rpt pretrain-hermes-rpt adapt-hermes-rpt
+        train-baselines train-hermes-rpt pretrain-hermes-rpt adapt-hermes-rpt \
+        demo-up demo-seed demo-discover demo-map demo-train demo-predict demo-security-test \
+        demo-down
 
 UV ?= uv
 
@@ -79,3 +81,36 @@ pretrain-hermes-rpt: ## Pretrain + fine-tune Hermes-RPT-0.1 (Tiny) vs. scratch, 
 
 adapt-hermes-rpt: ## Train a shared Hermes-RPT-0.1 backbone + per-tenant private adapters (Alpha, Beta) and compare; requires `make install-ml`.
 	$(UV) run python -m apps.trainer.main adapt
+
+# --- Phase 17: end-to-end two-tenant demonstration -------------------------------------------
+# See docs/DEMO.md for the full walkthrough, expected output, and what each step proves.
+# Requires `make install-ml` (the API app imports mlflow/torch transitively). If the default
+# ports (5432/5433/5434/5000) are already taken on your machine, override CONTROL_PLANE_DB_PORT/
+# TENANT_ALPHA_DB_PORT/TENANT_BETA_DB_PORT/MLFLOW_PORT — the same env vars every demo-* target
+# and docker-compose.yml itself both read, so setting them once (e.g. in a `.env.demo` you
+# `export`) is enough.
+
+demo-up: ## Start the full demo stack (control-plane DB, MLflow, Tenant Alpha/Beta databases) and migrate.
+	docker compose up -d
+	$(UV) run alembic upgrade head
+
+demo-seed: ## Create Alpha/Beta demo tenants and seed synthetic operational history into their real databases.
+	$(UV) run --group ml python -m scripts.demo seed
+
+demo-discover: ## Run real schema discovery against both tenant databases.
+	$(UV) run --group ml python -m scripts.demo discover
+
+demo-map: ## Create, validate, and activate tenant-specific schema mappings onto the shared ontology.
+	$(UV) run --group ml python -m scripts.demo map
+
+demo-train: ## Build tenant datasets, train baselines + Hermes-RPT-0.1 Tiny, promote to production.
+	$(UV) run --group ml python -m scripts.demo train
+
+demo-predict: ## Execute a real prediction per tenant and show its full lineage.
+	$(UV) run --group ml python -m scripts.demo predict
+
+demo-security-test: ## Trigger drift, suspend the affected mapping, prove isolation and log safety.
+	$(UV) run --group ml python -m scripts.demo security-test
+
+demo-down: ## Tear down the demo stack.
+	docker compose down

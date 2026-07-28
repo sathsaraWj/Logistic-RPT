@@ -155,4 +155,5 @@ async def acknowledge_drift(
 ) -> SnapshotDetailResponse:
     snapshot = await service.acknowledge_drift(snapshot_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(snapshot)
     return SnapshotDetailResponse.from_orm_snapshot(snapshot)

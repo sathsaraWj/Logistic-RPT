@@ -26,7 +26,14 @@ class LogisticRegressionBaseline:
     def __init__(self, config: TrainingConfig) -> None:
         self._pipeline = Pipeline(
             steps=[
-                ("imputer", SimpleImputer(strategy="median")),
+                # keep_empty_features: a column that's 100%-missing for this tenant (e.g. a
+                # feature derived from an optional entity the tenant hasn't mapped — "do not
+                # assume all customers have every feature", see GradientBoostedTreesBaseline's
+                # docstring in this module) would otherwise be *dropped* by the imputer rather
+                # than filled, silently shrinking the fitted pipeline's input width below
+                # `len(feature_names)` and breaking `feature_importance`'s positional zip
+                # against the full feature list.
+                ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
                 ("scaler", StandardScaler()),
                 (
                     "classifier",
@@ -67,7 +74,7 @@ class GradientBoostedTreesBaseline:
         )
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
-        self._model.fit(X, y)
+        self._model.fit(_break_degenerate_columns(X), y)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         return np.asarray(self._model.predict_proba(X)[:, 1])
@@ -92,7 +99,14 @@ class MLPBaseline:
         sizes = tuple(int(s) for s in str(hidden_layer_sizes).split(","))
         self._pipeline = Pipeline(
             steps=[
-                ("imputer", SimpleImputer(strategy="median")),
+                # keep_empty_features: a column that's 100%-missing for this tenant (e.g. a
+                # feature derived from an optional entity the tenant hasn't mapped — "do not
+                # assume all customers have every feature", see GradientBoostedTreesBaseline's
+                # docstring in this module) would otherwise be *dropped* by the imputer rather
+                # than filled, silently shrinking the fitted pipeline's input width below
+                # `len(feature_names)` and breaking `feature_importance`'s positional zip
+                # against the full feature list.
+                ("imputer", SimpleImputer(strategy="median", keep_empty_features=True)),
                 ("scaler", StandardScaler()),
                 (
                     "classifier",
@@ -114,6 +128,37 @@ class MLPBaseline:
 
     def feature_importance(self, feature_names: tuple[str, ...]) -> dict[str, float] | None:
         return None  # an MLP's weights aren't a direct per-feature importance signal
+
+
+def _break_degenerate_columns(X: np.ndarray) -> np.ndarray:
+    """`HistGradientBoostingClassifier`'s bin-threshold computation needs at least two distinct
+    *present* values per column and raises `ValueError` otherwise — a real crash risk for a
+    column that's 100%-missing for a given tenant (e.g. a feature derived from an optional
+    entity the tenant hasn't mapped — the same "do not assume all customers have every feature"
+    scenario `keep_empty_features` handles for the imputer-based baselines above), or, more
+    rarely, one whose only present values all happen to be numerically identical.
+
+    Adds a tiny, fixed-seed jitter to a degenerate column's *present* values so a bin threshold
+    exists to compute; a column with zero present values at all gets two of its rows seeded
+    with near-zero jittered values for the same reason (still >99.99% missing for any dataset
+    this matters on). Either way, `NaN` stays `NaN` everywhere else — still genuinely "missing"
+    to the model — and a column with fewer than two real distinct values carries no information
+    the jitter could ever erase: nothing correlates with an amount this small, so the model
+    still learns to treat the column as unused. Returns a copy; the original matrix (and every
+    other baseline's un-jittered view of it) is untouched.
+    """
+
+    result = X.copy()
+    rng = np.random.default_rng(0)
+    for col in range(result.shape[1]):
+        column = result[:, col]
+        present = ~np.isnan(column)
+        if present.sum() == 0:
+            seed_count = min(2, column.shape[0])
+            column[:seed_count] = rng.normal(0, 1e-9, size=seed_count)
+        elif np.unique(column[present]).size < 2:
+            column[present] += rng.normal(0, 1e-9, size=int(present.sum()))
+    return result
 
 
 def _typed_hyperparameters(

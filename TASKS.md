@@ -152,9 +152,17 @@ Phase 1.
       skips without `make up`): validate against real Alpha/Beta Postgres, write rejected at
       the database level (`default_transaction_read_only`), tenant-keyed pool lookup holds for
       real engines too, logs contain no passwords against the real driver
-- [ ] **Follow-up**: run `make up && uv run pytest tests/integration` once Docker is available
-      in this environment to actually execute (not just validate the design of) the real-DB
-      tests above
+- [x] **Follow-up**: Docker became available in Phase 17 — ran the full real-DB suite for the
+      first time ever. `test_customer_db_connections.py` and `test_schema_discovery_real_db.py`
+      pass (needed one real fix: `_register_kwargs` was missing `tls_mode="disable"` — the
+      docker-compose Postgres fixtures have no SSL configured, so the connector's own
+      `tls_mode="require"` default failed outright against them, a previously-uncaught gap since
+      nothing had ever run this against a real, SSL-less Postgres before). `test_row_level_
+      security.py` now correctly, honestly **fails** — see docs/SECURITY_REVIEW.md §2a: the
+      connecting database role has `BYPASSRLS`, making every RLS policy in the codebase a
+      structural no-op in both local dev and (very likely) production. Not fixed in this pass
+      (a real fix needs a two-role privilege split, more below); the test was left exactly as
+      written rather than weakened, since it's correctly detecting a real, serious gap.
 
 ## Phase 5 — Schema discovery and fingerprinting
 
@@ -678,9 +686,53 @@ about, so they're listed here too rather than only under Phase 14's deployment w
 
 ## Phase 17 — End-to-end demonstration
 
-- [ ] Alpha/Beta demo tenants with distinct schemas per prompts.txt
-- [ ] `make demo-{up,seed,discover,map,train,predict,security-test,down}`
-- [ ] `docs/DEMO.md`; full run demonstrating isolation, drift handling, and safe logging
+- [x] Alpha/Beta demo tenants with distinct schemas per prompts.txt's literal table lists —
+      `fleet_vehicle`/`fleet_driver`/`transport_trip`/`delivery_record`/`maintenance_log` (Alpha)
+      vs. `assets`/`employees`/`jobs`/`consignments`/`service_orders` (Beta), each mapping to the
+      same five real ontology entities (Vehicle/Driver/Trip/Delivery/MaintenanceEvent) with
+      deliberately different column names too (`docker/postgres-fixtures/{alpha,beta}/init.sql`,
+      `scripts/demo/fixtures.py`). Real, separate PostgreSQL instances per tenant
+      (`docker-compose.yml`), not just separate schemas on one instance.
+- [x] `make demo-{up,seed,discover,map,train,predict,security-test,down}` — `scripts/demo/`
+      (CLI, `uv run --group ml python -m scripts.demo <subcommand>`), each step a separate
+      process against the real control-plane PostgreSQL and the real HTTP API
+      (`TestClient(create_app())` with real signed dev JWTs, not a shortcut around auth). Full
+      pipeline run and verified end to end: schema discovery finds real, distinct fingerprints;
+      all 10 mappings (5 entities × 2 tenants) activate; both tenants build real datasets, train
+      all three baselines + Hermes-RPT-0.1 Tiny, and promote a model to production; both tenants
+      get real predictions with full lineage (model version + stage + artifact checksum, mapping
+      version, feature version); the security-test step proves schema drift is detected and the
+      affected mapping suspended, the *unaffected* tenant keeps operating, a cross-tenant access
+      attempt is denied as 404, and a deliberate attempt to log the tenant's DB credential is
+      actually redacted (verified via a real capture of non-zero log bytes, not a vacuous
+      zero-bytes "pass").
+- [x] `docs/DEMO.md`; full run demonstrating isolation, drift handling, and safe logging.
+
+Real bugs found and fixed while actually running this end to end (every one of them a genuine,
+previously-undiscovered gap — nothing had combined "real HTTP API" + "real PostgreSQL control
+plane" + "real Postgres customer databases" all at once before this phase):
+- `TimestampMixin.updated_at`'s `onupdate=func.now()` pattern crashed with
+  `sqlalchemy.exc.MissingGreenlet` on any endpoint that mutates a row, commits, and then
+  serializes it into a response — fixed with `await session.refresh(obj)` in the 10 affected
+  route handlers (`apps/api/routers/connections.py`, `mappings.py`, `schema_discovery.py`); see
+  `tests/integration/test_api_over_real_postgres.py` for the regression test and full writeup.
+- `SimpleImputer(strategy="median")` silently *dropped* a feature column that's 100%-missing
+  for a tenant (e.g. an unmapped optional entity) instead of imputing it, breaking
+  `feature_importance`'s positional alignment; `HistGradientBoostingClassifier` outright crashes
+  on a column with fewer than two distinct present values. Both fixed in
+  `src/hermes_rpt/models/baselines.py` (`keep_empty_features=True`; a tiny fixed-seed jitter for
+  genuinely degenerate columns) — a real robustness gap in "do not assume all customers have
+  every feature" that only a tenant mapping fewer than all optional entities could ever trigger.
+- **`docs/SECURITY_REVIEW.md` §2a (Critical, still open)**: the database role this platform
+  connects as has `BYPASSRLS`, making every PostgreSQL Row-Level Security policy a structural
+  no-op — discovered by finally running `tests/integration/test_row_level_security.py` for the
+  first time. Top-priority follow-up; not fixed in this pass (needs a two-role privilege split,
+  safely tested — see that section for the full reasoning on why it's deferred rather than
+  rushed).
+- `tests/integration/test_customer_db_connections.py` needed `tls_mode="disable"` added to its
+  connection registration — the docker-compose Postgres fixtures have no SSL configured, so the
+  connector's own `tls_mode="require"` default failed outright the first time this test ever
+  actually ran against them.
 
 ## Phase 18 — Final repository audit
 

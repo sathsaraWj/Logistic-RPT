@@ -153,6 +153,7 @@ async def submit_for_validation(
         mapping_id, tenant_context=tenant_context
     )
     await session.commit()
+    await session.refresh(mapping)
     return MappingResponse.from_orm_mapping(mapping)
 
 
@@ -164,6 +165,7 @@ async def approve(
 ) -> MappingResponse:
     mapping = await MappingService(session).approve(mapping_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(mapping)
     return MappingResponse.from_orm_mapping(mapping)
 
 
@@ -175,6 +177,7 @@ async def activate(
 ) -> MappingResponse:
     mapping = await MappingService(session).activate(mapping_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(mapping)
     return MappingResponse.from_orm_mapping(mapping)
 
 
@@ -184,6 +187,7 @@ async def deprecate(
 ) -> MappingResponse:
     mapping = await MappingService(session).deprecate(mapping_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(mapping)
     return MappingResponse.from_orm_mapping(mapping)
 
 
@@ -193,4 +197,5 @@ async def reject(
 ) -> MappingResponse:
     mapping = await MappingService(session).reject(mapping_id, tenant_context=tenant_context)
     await session.commit()
+    await session.refresh(mapping)
     return MappingResponse.from_orm_mapping(mapping)
