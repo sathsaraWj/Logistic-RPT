@@ -41,5 +41,18 @@ switch ($Task) {
     "train-hermes-rpt" { uv run python -m apps.trainer.main hermes-rpt }
     "pretrain-hermes-rpt" { uv run python -m apps.trainer.main pretrain }
     "adapt-hermes-rpt" { uv run python -m apps.trainer.main adapt }
+    "clean" { uv run python -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('.pytest_cache', '.mypy_cache', '.ruff_cache')]" }
+    # Phase 17 end-to-end demo — see docs/DEMO.md. Requires install-ml (the API app imports
+    # mlflow/torch transitively). If default ports collide with something else on your machine,
+    # set CONTROL_PLANE_DB_PORT/TENANT_ALPHA_DB_PORT/TENANT_BETA_DB_PORT/MLFLOW_PORT first — the
+    # same env vars docker-compose.yml and every demo-* step below both read.
+    "demo-up"            { docker compose up -d; uv run alembic upgrade head }
+    "demo-seed"          { uv run --group ml python -m scripts.demo seed }
+    "demo-discover"      { uv run --group ml python -m scripts.demo discover }
+    "demo-map"           { uv run --group ml python -m scripts.demo map }
+    "demo-train"         { uv run --group ml python -m scripts.demo train }
+    "demo-predict"       { uv run --group ml python -m scripts.demo predict }
+    "demo-security-test" { uv run --group ml python -m scripts.demo security-test }
+    "demo-down"          { docker compose down }
     default       { throw "Unknown task '$Task'. See tasks.ps1 for the list." }
 }

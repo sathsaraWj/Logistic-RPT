@@ -736,12 +736,44 @@ plane" + "real Postgres customer databases" all at once before this phase):
 
 ## Phase 18 — Final repository audit
 
-- [ ] Full audit per prompts.txt checklist; all available checks run
-- [ ] Updated `README.md`, `TASKS.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY_REVIEW.md`,
-      `docs/MODEL_RESEARCH_PLAN.md`, `CHANGELOG.md`
-- [ ] `docs/RELEASE_READINESS.md`
-- [ ] Accurate positioning ("early, secure, multi-tenant relational ML/transformer research
-      platform for fleet and logistics data" — not equivalent to any third-party product)
+- [x] Full audit per prompts.txt checklist — architecture (checked against actual code, found
+      and fixed one stale claim in `docs/ARCHITECTURE.md` §8, see below), tenant isolation
+      (unaffected by the open RLS finding — application-layer filtering is the primary control
+      and is independently well-tested), test coverage (68 test files / 124 source files),
+      type safety (`mypy` clean, strict mode, 148 files), dependency health (`pip-audit` clean),
+      migration consistency (single linear head; verified a full upgrade-from-scratch +
+      downgrade-to-base cycle against a scratch database), API documentation (OpenAPI schema
+      generates cleanly, 29 documented paths), model reproducibility (fixed-seed bit-identical
+      training verified by test), dataset lineage (manifests/checksums, verified by test),
+      schema drift behaviour (verified live in Phase 17's demo), registry rollback (covered by
+      `test_model_governance.py`), secret redaction (Phase 16, re-verified), Docker setup
+      (`docker compose config` validates), CI setup (reviewed, both workflows gate on
+      lint/type/security/pip-audit), documentation accuracy (two real staleness bugs found and
+      fixed — see below), dead code (`ruff` F401/F811/F841 clean), TODOs (none found in
+      `src`/`apps`/`scripts`), placeholder implementations (all documented/intentional —
+      `apps/worker`, cloud secret providers, non-Postgres connectors — not silent gaps),
+      production-readiness gaps (catalogued in `docs/RELEASE_READINESS.md`).
+- [x] Ran all available checks: `ruff check`/`format --check`, `mypy`, `bandit`, `pip-audit`,
+      `pytest tests/unit` (385 passed with `tests/security`), `pytest tests/security` (same run),
+      `pytest tests/model` (110 passed), `pytest tests/integration` against the live Phase 17
+      demo stack (5 passed, 1 correctly-failing per the open RLS finding, 1 benign Windows
+      teardown artifact already documented), `docker compose config`, a from-scratch migration
+      upgrade+downgrade cycle.
+- [x] Two real documentation-accuracy bugs found and fixed: `docs/ARCHITECTURE.md` §8 said
+      deployment was "not built" when a real Cloud Run deployment has existed since Phase 14;
+      `docs/MODEL_RESEARCH_PLAN.md`'s status line said "no model code exists yet" after Phases
+      10–14 built and tested all of it (added a §9 retrospective with the honest, current
+      answer to each of §1's original research questions). `tasks.ps1` was missing every
+      `demo-*` target Phase 17 added to the Makefile — added, matching exactly.
+- [x] Updated `README.md`, `TASKS.md` (this section), `docs/ARCHITECTURE.md`,
+      `docs/SECURITY_REVIEW.md`, `docs/MODEL_RESEARCH_PLAN.md`, `CHANGELOG.md` (new).
+- [x] `docs/RELEASE_READINESS.md` — completed capabilities, known limitations, security status,
+      model-performance status, required infrastructure, production blockers (RLS BYPASSRLS
+      finding ranked first), recommended next milestone (real design-partner data).
+- [x] Accurate positioning throughout: "an early, secure, multi-tenant relational
+      machine-learning and transformer research platform for fleet and logistics data" — not
+      equivalent to any third-party product, stated explicitly in `README.md` and
+      `docs/RELEASE_READINESS.md`.
 
 ---
 

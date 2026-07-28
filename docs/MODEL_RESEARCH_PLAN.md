@@ -1,6 +1,10 @@
 # Hermes-RPT Model Research Plan
 
-Status: **Draft — research direction for Phases 6–12. No model code exists yet.**
+Status: **Executed — Phases 10–14 implemented and tested every step in §5's roadmap.** This
+document was written before any model code existed (as the research *plan*); §9 below is the
+Phase 18 retrospective on what was actually found. The plan itself (§§1–8) is left as originally
+written, as the honest record of what was decided in advance rather than rewritten with
+hindsight.
 
 ## 1. Research questions
 
@@ -105,3 +109,48 @@ counts before that implementation phase, to avoid the plan and the code drifting
   equivalence to any other system (restated in Phase 18's release-readiness language).
 * Not pursuing shared cross-tenant pretraining unless and until `DataUsageConsent` (Phase 2) and
   an approved shared-dataset class (Phase 12) exist and are explicitly granted.
+
+## 9. Retrospective (Phase 18) — what was actually found
+
+All five roadmap steps (§5) were built and tested; full detail lives in
+[docs/BASELINE_MODELS.md](BASELINE_MODELS.md), [docs/HERMES_RPT_0_1.md](HERMES_RPT_0_1.md), and
+[docs/HERMES_RPT_PRETRAINING.md](HERMES_RPT_PRETRAINING.md) — this section only summarizes the
+honest headline answer to each §1 research question, per those documents' own stated caveats.
+
+1. **Does one ontology absorb cross-schema heterogeneity?** Yes, structurally — the same
+   pipeline (discovery → mapping → feature extraction → training → inference) runs unmodified
+   against Tenant Alpha's and Tenant Beta's deliberately different schemas, proven concretely by
+   the Phase 17 end-to-end demo (`docs/DEMO.md`) using yet a *third* independently-designed
+   schema pair. This answers the structural/engineering half of the question; it does not by
+   itself say anything about model *quality* across heterogeneous real schemas, which needs real
+   customer data to assess (§3's own stated limitation, still true).
+2. **Does the relational transformer beat the strongest baseline?** Inconclusive on synthetic
+   data, and both `docs/HERMES_RPT_0_1.md` §8 and `docs/BASELINE_MODELS.md` §10 say so plainly
+   rather than reporting a favorable-looking number without the caveat: the synthetic label
+   generator's delay function is only weakly correlated with the available features, so neither
+   baselines nor the transformer have much real signal to find, and a win either direction is not
+   evidence about the architecture. This is exactly the §7 "evaluation limitation, not an
+   architecture verdict" scenario the plan pre-committed to recognizing, and it is what actually
+   happened.
+3. **Does relational pretraining help vs. training from scratch?** Same answer as (2), for the
+   same underlying reason (`docs/HERMES_RPT_PRETRAINING.md` §10) — the pipeline runs correctly
+   end to end (pretrain → fine-tune → compare, bit-identical reproducibility for a fixed seed,
+   protected-identifier exclusion verified across 30 seeds), but the synthetic dataset cannot
+   distinguish a real pretraining benefit from noise. Demonstrates the pipeline is correct, not
+   that pretraining helps.
+4. **Do tenant adapters approach a fully-private model while staying isolated?** The isolation
+   half is proven structurally, not just empirically: Phase 14's `adapt` command asserts against
+   the real governance layer that Tenant Alpha's `TenantContext` cannot read or alias Tenant
+   Beta's adapter, and that shared-backbone weights never change during adapter training
+   (bit-identical backbone tensors before/after, not just "loss looks stable"). The
+   quality-comparison half inherits the same synthetic-data weak-signal caveat as (2)/(3).
+
+**Overall**: every engineering/architecture claim in this research plan was validated (heterogeneous
+schemas, relational context, pretraining objectives, tenant-isolated adaptation, reproducibility,
+registry/rollback, safe explanations) — the platform *can* do everything §1 asked whether it
+could do. Every *quality* claim (does it predict better) remains genuinely open, exactly as §3
+warned it would, because it was never given real data to answer it with. The honest, repeated
+finding across Phases 10–14 is not "Hermes-RPT works" or "Hermes-RPT doesn't work" — it's "the
+synthetic data available so far cannot tell us which." See
+[docs/RELEASE_READINESS.md](RELEASE_READINESS.md) for how this shapes the recommended next
+milestone (real, consented design-partner data, not more synthetic-data experimentation).

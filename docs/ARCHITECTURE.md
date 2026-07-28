@@ -171,14 +171,31 @@ any HTTP request.
   incompatible model/ontology/feature version all result in a rejected operation, not a
   best-effort guess.
 
-## 8. Deployment topology (target, not built in Phases 0–18)
+## 8. Deployment topology
 
 `apps/api`, `apps/worker`, and `apps/trainer` are designed as independently deployable
 processes sharing the `src/hermes_rpt` library, so that, in a real deployment, training
 workloads (potentially GPU-backed) can be scaled and isolated separately from the request-serving
-API. Building and operating that deployment (Kubernetes manifests, autoscaling, secrets
-infrastructure in a real cloud KMS, etc.) is out of scope for this repository at this stage and
-is called out as a production blocker in the eventual release-readiness assessment (Phase 18).
+API.
+
+**What's actually deployed** (Phase 14 onward, see [DEPLOYMENT.md](DEPLOYMENT.md)): `apps/api`
+runs on Cloud Run (with a `cloud-sql-proxy` sidecar) against a Cloud SQL control-plane Postgres
+instance, using Workload Identity Federation for CI/CD (no long-lived service account key) and
+Secret Manager for the JWT signing secret and database credentials. This is a real, working,
+single-project GCP deployment (`hermes-rpt-demo`) — not merely a design target.
+
+**What's still only a design target, not deployed anywhere**: `apps/worker` as a genuinely
+separate, scaled process (background jobs currently run in-process via `asyncio.create_task`
+from `apps/api` itself — see `hermes_rpt.schemas.jobs`'s own docstring on this being a known,
+documented gap, not durable-queue-backed); `apps/trainer` as a deployed/scheduled service
+(training currently runs as a local CLI, `uv run python -m apps.trainer.main`, against local or
+demo infrastructure, never against the deployed Cloud SQL instance); Kubernetes, autoscaling,
+GPU-backed training infrastructure, and a real cloud KMS-backed secret provider (only
+`LocalDevSecretProvider` is implemented; `AzureKeyVaultSecretProvider`/
+`GoogleSecretManagerSecretProvider` are interface reservations only, per
+[docs/adr/0005-secret-provider-abstraction.md](adr/0005-secret-provider-abstraction.md)). See
+[docs/RELEASE_READINESS.md](RELEASE_READINESS.md) (Phase 18) for the full, current
+capability/limitation/production-blocker assessment.
 
 ## 9. Unresolved architectural assumptions
 

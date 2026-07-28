@@ -16,6 +16,13 @@ short of actually running a real-Postgres RLS test (which nothing had, until Pha
 this class of gap. Flagging honestly rather than leaving the "Complete" status from before this
 update stand uncorrected.
 
+**Update (Phase 18):** the final repository audit re-ran the full local check suite (lint,
+format, types, bandit, `pip-audit`, unit/security/model/integration tests) and confirms no new
+Critical/High finding beyond §2a. `tests/integration/test_row_level_security.py` still correctly
+fails for the same, already-documented reason (§2a remains open, not yet fixed — see
+[docs/RELEASE_READINESS.md](RELEASE_READINESS.md) §6 for it as the top production blocker).
+Every other integration test passes against the real demo stack.
+
 ## 1. Method
 
 Three independent, read-only, file:line-referenced audits were run in parallel against the 18
