@@ -6,16 +6,19 @@ the full rationale:
 
 * `GET /metrics` — the raw, process-wide Prometheus scrape endpoint. Cross-tenant *by
   necessity* (a Prometheus server needs every tenant's series to alert correctly — "alerts
-  should identify the tenant internally"), so it is operator-only, gated on
-  `ScopeName.MONITORING_READ`.
+  should identify the tenant internally"), so it is operator-only, gated on `ScopeName.
+  MONITORING_READ` **and** `require_service` (a Phase 16 hardening: a Phase 15 review flagged
+  that scope alone would let any ordinary human tenant-admin token reach every tenant's series
+  if it were ever mistakenly granted `monitoring:read`; requiring a service-type principal too
+  means at minimum a deliberately-issued, non-human credential is needed, not an accidental
+  scope grant on a human's dashboard login).
 
-  **Known gap, not silently glossed over**: this platform's auth model has no genuine
-  "platform-wide, not tied to any one tenant" credential yet — every issued token (`TokenClaims.
-  tenant_id`) belongs to exactly one tenant, service tokens included. `MONITORING_READ` is
-  therefore only as safe as *who this scope is issued to* — it must be restricted to a small
-  number of trusted internal scraper/operator credentials by issuance discipline, not by a
-  structural "this credential has no tenant" check this codebase doesn't have. Revisit in
-  Phase 16 (docs/SECURITY_REVIEW.md) if a real platform-operator credential type gets built.
+  **Residual gap, not silently glossed over**: this platform's auth model still has no genuine
+  "platform-wide, not tied to any one tenant" credential — every issued token (`TokenClaims.
+  tenant_id`), service tokens included, belongs to exactly one tenant. So `/metrics` is safe
+  only because of *who* is issued a service token with this scope, not because of a structural
+  "this credential has no tenant" check this codebase doesn't have. See docs/SECURITY_REVIEW.md
+  if a real platform-operator credential type gets built later.
 * `GET /v1/monitoring/summary` and `POST /v1/monitoring/predictions/{id}/outcome` — ordinary
   tenant-scoped endpoints, isolated the same way every other tenant-facing read/write in this
   platform is (tenant-scoped repositories), safe for a regular tenant token.
@@ -31,7 +34,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from apps.api.deps import DbSessionDep, MonitoringServiceDep, OutcomeServiceDep
-from hermes_rpt.auth.dependencies import require_scopes
+from hermes_rpt.auth.dependencies import require_scopes, require_service
 from hermes_rpt.auth.enums import ScopeName
 from hermes_rpt.common.repository import TenantMismatchError
 from hermes_rpt.monitoring import metrics
@@ -47,8 +50,15 @@ _PredictionExecuteScope = Annotated[
 ]
 
 
+def _require_metrics_scrape_access(tenant_context: _MonitoringReadScope) -> TenantContext:
+    return require_service(tenant_context)
+
+
+_MetricsScrapeAccess = Annotated[TenantContext, Depends(_require_metrics_scrape_access)]
+
+
 @router.get("/metrics")
-async def scrape_metrics(_tenant_context: _MonitoringReadScope) -> Response:
+async def scrape_metrics(_tenant_context: _MetricsScrapeAccess) -> Response:
     return Response(content=generate_latest(metrics.REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 

@@ -17,6 +17,7 @@ import uuid
 
 from hermes_rpt.common.db import get_sessionmaker
 from hermes_rpt.common.logging import get_logger
+from hermes_rpt.common.tenant_session import bind_tenant_for_row_level_security
 from hermes_rpt.connectors.pool_registry import get_pool_registry
 from hermes_rpt.connectors.postgres import PostgresConnector
 from hermes_rpt.connectors.service import ConnectionLifecycleManager
@@ -36,6 +37,12 @@ async def run_discovery_job(
 ) -> None:
     session_factory = get_sessionmaker()
     async with session_factory() as session:
+        # A Phase 16 security review found this session never bound `app.current_tenant_id` —
+        # only the FastAPI request path did (`hermes_rpt.auth.dependencies.get_tenant_context`).
+        # This job's own writes (the snapshot, drift summary, audit events) ran with RLS's
+        # defense-in-depth layer silently absent on real PostgreSQL, relying entirely on
+        # application-layer tenant filtering holding with zero margin for error.
+        await bind_tenant_for_row_level_security(session, tenant_context.tenant_id)
         manager = ConnectionLifecycleManager(
             session,
             secret_provider=get_secret_provider(),

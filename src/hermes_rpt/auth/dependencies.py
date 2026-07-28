@@ -91,7 +91,7 @@ async def get_tenant_context(
         correlation_id=_correlation_id_from_request(request),
         principal_type=claims.principal_type.value,
     )
-    await bind_tenant_for_row_level_security(session, tenant_context)
+    await bind_tenant_for_row_level_security(session, tenant_context.tenant_id)
     request.state.tenant_id = tenant_context.tenant_id
     return tenant_context
 

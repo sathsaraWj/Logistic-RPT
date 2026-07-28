@@ -96,6 +96,21 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("jwt_algorithm")
+    @classmethod
+    def _validate_jwt_algorithm(cls, value: str) -> str:
+        """A Phase 16 security review noted this field was an unconstrained `str` — PyJWT's own
+        `NoneAlgorithm` currently rejects `alg=none` when a signing key is supplied, so nothing
+        was actually exploitable today, but that safety was an assumption about PyJWT's
+        behavior, not something this codebase enforced itself. Every other algorithm-shaped
+        setting in this class (`log_level`, `database_url`) has a validator; this one should
+        too."""
+
+        allowed = {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384"}
+        if value not in allowed:
+            raise ValueError(f"jwt_algorithm must be one of {sorted(allowed)}, got {value!r}")
+        return value
+
     @model_validator(mode="after")
     def _reject_insecure_jwt_secret_outside_dev(self) -> Settings:
         if (

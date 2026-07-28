@@ -7,6 +7,10 @@ own rows) on a real PostgreSQL deployment, invisible to the rest of the test sui
 runs against SQLite, where this function is a documented no-op. Fixed by having
 `hermes_rpt.auth.dependencies.get_tenant_context` call it; these tests cover the helper directly
 plus the wiring.
+
+Takes a raw `tenant_id: uuid.UUID | None` (not a `TenantContext`) since Phase 16 added a third
+call site — `apps/api/exception_handlers.py`'s best-effort audit write — that only ever has a
+raw, sometimes-`None`, tenant id in scope, not a full verified context.
 """
 
 from __future__ import annotations
@@ -15,7 +19,6 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 from hermes_rpt.common.tenant_session import bind_tenant_for_row_level_security
-from hermes_rpt.tenants.context import TenantContext
 
 
 def _session_with_dialect(dialect_name: str) -> MagicMock:
@@ -28,9 +31,8 @@ def _session_with_dialect(dialect_name: str) -> MagicMock:
 async def test_sets_the_session_variable_on_postgresql() -> None:
     session = _session_with_dialect("postgresql")
     tenant_id = uuid.uuid4()
-    tenant_context = TenantContext(tenant_id=tenant_id, principal_id=uuid.uuid4())
 
-    await bind_tenant_for_row_level_security(session, tenant_context)
+    await bind_tenant_for_row_level_security(session, tenant_id)
 
     session.execute.assert_awaited_once()
     (statement, params), _kwargs = session.execute.call_args
@@ -41,8 +43,20 @@ async def test_sets_the_session_variable_on_postgresql() -> None:
 
 async def test_is_a_no_op_on_non_postgresql_dialects() -> None:
     session = _session_with_dialect("sqlite")
-    tenant_context = TenantContext(tenant_id=uuid.uuid4(), principal_id=uuid.uuid4())
 
-    await bind_tenant_for_row_level_security(session, tenant_context)
+    await bind_tenant_for_row_level_security(session, uuid.uuid4())
+
+    session.execute.assert_not_awaited()
+
+
+async def test_is_a_no_op_for_a_none_tenant_id_even_on_postgresql() -> None:
+    """A platform-level caller with no tenant to bind (e.g. an authentication failure before
+    any tenant claim was verified) — leaving the session variable unset for this transaction is
+    equivalent to explicitly clearing it, and correct: `audit_events`'s RLS policy (migration
+    `b48a21a99ef0`) treats an unbound session as eligible to write a NULL-tenant row."""
+
+    session = _session_with_dialect("postgresql")
+
+    await bind_tenant_for_row_level_security(session, None)
 
     session.execute.assert_not_awaited()

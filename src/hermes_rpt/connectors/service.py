@@ -34,6 +34,16 @@ class ConnectionNotReadyError(Exception):
     """Raised by `enable_connection` when a connection has never been successfully validated."""
 
 
+class ConnectionDisabledError(Exception):
+    """Raised by `get_or_create_engine` for a connection whose `status == DISABLED` — a Phase 16
+    security review found `disable_connection` evicted the pool but nothing stopped the very
+    next request from calling `get_or_create_engine` and simply rebuilding it, silently
+    re-enabling a connection an admin had explicitly turned off. `validate_connection` does not
+    call `get_or_create_engine` (it builds its own engine inline, specifically so it can probe a
+    not-yet-`ACTIVE` connection), so this guard cannot block the one legitimate path that needs
+    to reach a non-`ACTIVE` connection."""
+
+
 class ConnectionLifecycleManager:
     def __init__(
         self,
@@ -130,6 +140,13 @@ class ConnectionLifecycleManager:
         `schema_allowlist`/`table_allowlist`."""
 
         connection = await self._connections.require(connection_id, tenant_context=tenant_context)
+        if connection.status == ConnectionStatus.DISABLED:
+            metrics.unexpected_connection_usage_total.labels(
+                tenant_id=str(tenant_context.tenant_id), reason="disabled_connection_reused"
+            ).inc()
+            raise ConnectionDisabledError(
+                f"Connection {connection_id} is disabled and cannot be used"
+            )
         target = await self._resolve_target(connection, tenant_context=tenant_context)
         engine = await self._pool_registry.get_or_create(
             tenant_id=tenant_context.tenant_id, connection_id=connection.id, target=target

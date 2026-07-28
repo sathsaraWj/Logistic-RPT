@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_rpt.mappings.document import FieldMapping, MappingDocument, SourceTable, ValueSource
+from hermes_rpt.mappings.expressions import ColumnRef, Expression, UpperCase
 from hermes_rpt.mappings.validation import MappingValidationError, validate_mapping_document
 from hermes_rpt.ontology.registry import get_ontology
 
@@ -56,6 +57,32 @@ def test_column_not_in_source_table_is_rejected() -> None:
         validate_mapping_document(
             _document(), ontology_entity=_VEHICLE, available_columns={"vehicle_id"}
         )
+
+
+def _over_deep_expression() -> Expression:
+    expr: Expression = ColumnRef(column="registration_no")
+    for _ in range(25):
+        expr = UpperCase(value=expr)
+    return expr
+
+
+def test_over_deep_derived_expression_is_rejected() -> None:
+    document = _document(
+        registration_number=FieldMapping(sources=(ValueSource(derived=_over_deep_expression()),))
+    )
+    with pytest.raises(MappingValidationError, match="exceeds the maximum depth"):
+        validate_mapping_document(document, ontology_entity=_VEHICLE)
+
+
+def test_over_deep_derived_expression_is_rejected_even_without_available_columns() -> None:
+    """The depth check must run even when there's no column allowlist to check against —
+    the recursion-DoS risk exists regardless (Phase 16 hardening)."""
+
+    document = _document(
+        registration_number=FieldMapping(sources=(ValueSource(derived=_over_deep_expression()),))
+    )
+    with pytest.raises(MappingValidationError, match="exceeds the maximum depth"):
+        validate_mapping_document(document, ontology_entity=_VEHICLE, available_columns=None)
 
 
 def test_unit_conversion_to_incompatible_unit_family_is_rejected() -> None:

@@ -3,9 +3,9 @@
 Status: implements part of Phase 15 of [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md)
 ("add an incident runbook"). General, operational — triggered by any monitoring alert. For
 security-specific incidents (a suspected breach, credential compromise, confirmed cross-tenant
-data exposure), also follow `docs/INCIDENT_RESPONSE.md` (Phase 16, not yet written as of this
-runbook — this section will link to it once it exists), which layers stricter containment/
-disclosure steps on top of the triage flow below.
+data exposure), also follow [docs/INCIDENT_RESPONSE.md](../INCIDENT_RESPONSE.md) (Phase 16),
+which layers stricter severity classification, containment, and disclosure steps on top of the
+triage flow below.
 
 ## 1. Where signals come from
 
@@ -27,8 +27,8 @@ disclosure steps on top of the triage flow below.
    [docs/MONITORING.md](../MONITORING.md):
    - `hermes_cross_tenant_access_attempts_total`, `hermes_authentication_failures_total`,
      `hermes_authorization_failures_total` rising → possible attack or a broken client;
-     escalate to the security-incident path (§4, and docs/INCIDENT_RESPONSE.md) if the rate or
-     pattern looks adversarial rather than a single misconfigured integration.
+     escalate to the security-incident path (§4, and [../INCIDENT_RESPONSE.md](../INCIDENT_RESPONSE.md))
+     if the rate or pattern looks adversarial rather than a single misconfigured integration.
    - `hermes_secret_resolution_failures_total`, `hermes_unexpected_connection_usage_total` →
      likely a credential rotation gone wrong or a customer-side database outage; see §5 for the
      connection-specific checks.
@@ -75,4 +75,4 @@ disclosure steps on top of the triage flow below.
 2. If a metric or alert threshold needs adjusting as a result, update
    [docs/MONITORING.md](../MONITORING.md) in the same change.
 3. If the incident involved a security boundary (auth, tenant isolation, secrets), also complete
-   the disclosure/containment steps in `docs/INCIDENT_RESPONSE.md` (Phase 16).
+   the disclosure/containment steps in [../INCIDENT_RESPONSE.md](../INCIDENT_RESPONSE.md).

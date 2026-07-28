@@ -23,3 +23,13 @@ def test_invalid_log_level_fails_fast() -> None:
 def test_log_level_is_case_insensitive() -> None:
     settings = Settings(log_level="debug")
     assert settings.log_level == "DEBUG"
+
+
+def test_algorithm_none_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(jwt_algorithm="none")
+
+
+def test_an_unrecognised_jwt_algorithm_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(jwt_algorithm="not-a-real-algorithm")

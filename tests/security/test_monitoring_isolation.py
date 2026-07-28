@@ -7,18 +7,36 @@ from __future__ import annotations
 
 import uuid
 
-from hermes_rpt.auth.enums import ScopeName
+from hermes_rpt.auth.enums import PrincipalType, ScopeName
 from tests.security.conftest import AuthFixture
 
 
 def test_metrics_endpoint_requires_monitoring_read_scope(auth_fixture: AuthFixture) -> None:
-    token = auth_fixture.token_for(scopes=[])
+    token = auth_fixture.token_for(scopes=[], principal_type=PrincipalType.SERVICE)
     response = auth_fixture.client.get("/metrics", headers=auth_fixture.auth_headers(token))
     assert response.status_code == 403
 
 
-def test_metrics_endpoint_is_reachable_with_the_scope(auth_fixture: AuthFixture) -> None:
-    token = auth_fixture.token_for(scopes=[ScopeName.MONITORING_READ.value])
+def test_metrics_endpoint_rejects_a_human_token_even_with_the_scope(
+    auth_fixture: AuthFixture,
+) -> None:
+    """Phase 16 hardening: `monitoring:read` alone used to be enough — an ordinary human
+    tenant-admin token accidentally granted this scope could scrape every tenant's series.
+    `/metrics` now also requires a service-type principal."""
+
+    token = auth_fixture.token_for(
+        scopes=[ScopeName.MONITORING_READ.value], principal_type=PrincipalType.HUMAN
+    )
+    response = auth_fixture.client.get("/metrics", headers=auth_fixture.auth_headers(token))
+    assert response.status_code == 403
+
+
+def test_metrics_endpoint_is_reachable_with_the_scope_and_a_service_token(
+    auth_fixture: AuthFixture,
+) -> None:
+    token = auth_fixture.token_for(
+        scopes=[ScopeName.MONITORING_READ.value], principal_type=PrincipalType.SERVICE
+    )
     response = auth_fixture.client.get("/metrics", headers=auth_fixture.auth_headers(token))
     assert response.status_code == 200
     assert "hermes_" in response.text

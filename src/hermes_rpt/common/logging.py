@@ -34,13 +34,20 @@ _SENSITIVE_KEYS = re.compile(
 
 # Value shapes that look like a credential-bearing connection string / bearer token, or personal
 # data, even if the key name didn't hint at it — e.g. `postgresql://user:pass@host/db`,
-# `Bearer eyJ...`, or an email address embedded in free text (an error message that happened to
-# interpolate `str(user)`, for instance).
+# `Bearer eyJ...`, an asyncpg-style keyword DSN fragment (`password=hunter2`), or an email
+# address embedded in free text (an error message that happened to interpolate `str(user)`, for
+# instance).
 _SENSITIVE_VALUE_PATTERNS = (
     re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^:\s]+:[^@\s]+@"),  # scheme://user:pass@
     re.compile(r"Bearer\s+[A-Za-z0-9\-_.]+", re.IGNORECASE),
     re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),  # email address
+    re.compile(r"password=\S+", re.IGNORECASE),  # keyword-style DSN fragment, e.g. asyncpg's
 )
+
+# Types a value can be without this processor needing to inspect its contents further — safe to
+# emit as-is regardless of key name (a key-name match on _SENSITIVE_KEYS still redacts these,
+# same as anything else).
+_SAFE_SCALAR_TYPES = (int, float, bool, type(None))
 
 
 def _redact_value(value: Any) -> Any:
@@ -53,6 +60,23 @@ def _redact_value(value: Any) -> Any:
         return {k: _redact_processor_value(k, v) for k, v in value.items()}
     if isinstance(value, list):
         return [_redact_value(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_value(v) for v in value)
+    if isinstance(value, _SAFE_SCALAR_TYPES):
+        return value
+    # Fallback for anything else this processor has no specific rule for (a dataclass, an ORM
+    # instance, a set, ...) — scan its string representation for the same sensitive-value shapes
+    # checked above. There's no way to redact selectively inside an opaque object's repr, so a
+    # match redacts the whole value; that's still better than emitting a secret verbatim just
+    # because it arrived wrapped in a type this processor doesn't otherwise understand. A Phase
+    # 16 review found exactly this gap (a credential-bearing dataclass logged directly would
+    # have passed through untouched); `ConnectionTarget.password` now also has `field(repr=
+    # False)` as a belt-and-suspenders fix at the source, but this backstop covers every other
+    # object this processor hasn't been specifically taught about.
+    text = repr(value)
+    for pattern in _SENSITIVE_VALUE_PATTERNS:
+        if pattern.search(text):
+            return _REDACTED
     return value
 
 

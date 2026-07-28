@@ -115,6 +115,27 @@ class ModelRegistryService:
         )
         return registered
 
+    async def _get_for_stage_mutation(
+        self, model_version_id: uuid.UUID, *, tenant_context: TenantContext | None
+    ) -> ModelVersion:
+        """Shared lookup for `transition_stage`/`deactivate_model_version` — a Phase 16 security
+        review found both calling the unscoped `self._models.get(...)` directly, letting any
+        caller with `model:promote` archive, demote, promote, or deactivate *another* tenant's
+        private `ModelVersion` by ID (the audit trail even recorded it under the victim's
+        `tenant_id`, since that's read off the row, not the caller). `tenant_context=None` still
+        means "trusted system/CLI caller" (see `_require_promotion_authorization`) and is
+        exempted from tenant scoping the same way it's exempted from the scope check — there is
+        no tenant to scope against for a trusted caller acting outside any tenant's request."""
+
+        if tenant_context is not None:
+            return await self._models.require_available_for_tenant(
+                model_version_id, tenant_context=tenant_context
+            )
+        model_version = await self._models.get(model_version_id)
+        if model_version is None:
+            raise ValueError(f"ModelVersion {model_version_id} not found")
+        return model_version
+
     async def transition_stage(
         self,
         model_version_id: uuid.UUID,
@@ -122,9 +143,9 @@ class ModelRegistryService:
         to_stage: ModelStage,
         tenant_context: TenantContext | None = None,
     ) -> ModelVersion:
-        model_version = await self._models.get(model_version_id)
-        if model_version is None:
-            raise ValueError(f"ModelVersion {model_version_id} not found")
+        model_version = await self._get_for_stage_mutation(
+            model_version_id, tenant_context=tenant_context
+        )
 
         current = model_version.stage
         if to_stage not in _VALID_TRANSITIONS[current]:
@@ -153,9 +174,9 @@ class ModelRegistryService:
         needing a stage transition; a deactivated model can be reactivated by the mirror-image
         call, but never silently starts serving again on its own."""
 
-        model_version = await self._models.get(model_version_id)
-        if model_version is None:
-            raise ValueError(f"ModelVersion {model_version_id} not found")
+        model_version = await self._get_for_stage_mutation(
+            model_version_id, tenant_context=tenant_context
+        )
 
         model_version.is_active = False
         await self._audit.record(

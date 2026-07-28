@@ -7,8 +7,7 @@ registry — never higher than `CANDIDATE`; see `hermes_rpt.registry.service`.
 
 from __future__ import annotations
 
-import hashlib
-import pickle  # nosec B403 - used only to compute a deterministic content checksum, never to load untrusted data
+import asyncio
 from typing import Any
 
 import mlflow
@@ -26,6 +25,7 @@ from hermes_rpt.models.config import TrainingConfig
 from hermes_rpt.models.dataset_adapter import build_feature_matrix
 from hermes_rpt.models.interface import BaselineModel
 from hermes_rpt.models.metrics import EvaluationMetrics, compute_metrics, select_threshold
+from hermes_rpt.registry.artifact_integrity import compute_artifact_checksum
 from hermes_rpt.registry.models import ModelVersion
 from hermes_rpt.registry.service import ModelRegistryService
 from hermes_rpt.tenants.context import TenantContext
@@ -51,19 +51,6 @@ def _estimator_of(model: BaselineModel) -> Any:
     if estimator is None:
         raise TypeError(f"{type(model).__name__} exposes neither _pipeline nor _model")
     return estimator
-
-
-def _compute_artifact_checksum(estimator: Any) -> str:
-    """A deterministic SHA-256 over the fitted estimator's own serialized bytes — Phase 10's
-    "model checksum" tracking requirement. Independent of MLflow's own artifact storage (which
-    may re-serialize with different pickle protocol options); this is purely a content-identity
-    hash, matching the same purpose Phase 5's schema fingerprint and Phase 9's dataset checksum
-    serve elsewhere. `pickle` here only ever serializes an estimator we just fitted ourselves —
-    never used to *load* anything, so there is no untrusted-deserialization risk (see comment on
-    the `pickle` import above).
-    """
-
-    return hashlib.sha256(pickle.dumps(estimator)).hexdigest()  # nosec B301
 
 
 class BaselineTrainingService:
@@ -109,7 +96,6 @@ class BaselineTrainingService:
             raise ValueError(f"No PredictionTaskDefinition registered for {contract.task_key!r}")
 
         estimator = _estimator_of(model)
-        artifact_checksum = _compute_artifact_checksum(estimator)
 
         mlflow.set_experiment(experiment_name)
         with mlflow.start_run() as run:
@@ -166,6 +152,10 @@ class BaselineTrainingService:
                 ],
             )
             model_uri = f"runs:/{run.info.run_id}/model"
+            # Hashed *after* logging, from what MLflow actually stored — not from the in-memory
+            # estimator beforehand, which MLflow's skops flavor is not guaranteed to reproduce
+            # byte-for-byte (see hermes_rpt.registry.artifact_integrity's module docstring).
+            artifact_checksum = await asyncio.to_thread(compute_artifact_checksum, model_uri)
 
             model_version = await self._registry.register_candidate(
                 ModelVersion(

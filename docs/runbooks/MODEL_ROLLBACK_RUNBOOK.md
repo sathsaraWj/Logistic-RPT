@@ -31,9 +31,13 @@ from hermes_rpt.registry.service import ModelRegistryService
 
 registry = ModelRegistryService(session)
 # 1. Demote the bad PRODUCTION version back to STAGING.
-await registry.transition_stage(bad_model_version_id, to_stage=ModelStage.STAGING, tenant_context=ctx)
+await registry.transition_stage(
+    bad_model_version_id, to_stage=ModelStage.STAGING, tenant_context=ctx
+)
 # 2. Promote the known-good previous version back to PRODUCTION.
-await registry.transition_stage(good_model_version_id, to_stage=ModelStage.PRODUCTION, tenant_context=ctx)
+await registry.transition_stage(
+    good_model_version_id, to_stage=ModelStage.PRODUCTION, tenant_context=ctx
+)
 await session.commit()
 ```
 

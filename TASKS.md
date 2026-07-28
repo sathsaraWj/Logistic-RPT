@@ -635,11 +635,46 @@ about, so they're listed here too rather than only under Phase 14's deployment w
 
 ## Phase 16 — Security hardening
 
-- [ ] Full repository security review across the areas listed in prompts.txt
-- [ ] Adversarial test suite per prompts.txt
-- [ ] `docs/SECURITY_REVIEW.md`, `docs/DATA_PROTECTION.md`, `docs/INCIDENT_RESPONSE.md`,
-      `docs/CUSTOMER_DATABASE_GUIDE.md`
-- [ ] No critical/high findings left open
+- [x] Full repository security review across the areas listed in prompts.txt — three parallel
+      read-only audits (auth/authz/tenant-isolation/object-access/connection-pools/secrets;
+      SQL-construction/mapping-expressions/dataset-registry/cache isolation; logging/background-
+      jobs/file-paths/artifacts/deserialization/dependencies/CI-secrets/error-messages), plus two
+      additional findings found while implementing the fixes (the `audit_events` RLS policy's
+      `NULL = NULL` bug, and the background-job RLS-binding gap). Five Critical/High findings, all
+      fixed: `DatasetBuildService.build` tenant-identity spoofing
+      (`hermes_rpt.datasets.builder._validate_definition_matches_tenant`); unscoped
+      `transition_stage`/`deactivate_model_version` in the model registry
+      (`ModelRegistryService._get_for_stage_mutation`); model artifact checksum computed
+      pre-serialization with no re-verification at load time
+      (`hermes_rpt.registry.artifact_integrity`, wired into `BaselineTrainingService.train` and
+      `ModelLoader.load`); disabled connections still usable via `get_or_create_engine`
+      (`ConnectionDisabledError`); `/metrics` reachable by any scoped human token
+      (`require_service` + `require_scopes(MONITORING_READ)`). See docs/SECURITY_REVIEW.md §2 for
+      full detail, §3 for the Medium/Low findings fixed or explicitly deferred with reasoning, and
+      §4 for confirmed non-findings (cross-tenant cache keys, unsafe deserialization, SQL
+      injection, path traversal — each investigated and found to have no reachable exploit
+      surface, not skipped).
+- [x] Adversarial test suite per prompts.txt — all 16 named attack vectors covered; new
+      `tests/security/test_injection_and_traversal.py` (SQL injection, mapping-expression
+      injection, path traversal, unsafe-deserialization confirmatory tests),
+      `test_model_artifact_integrity.py` (artifact substitution), `test_worker_job_tenant_binding.py`
+      (cross-tenant worker jobs); the rest were already covered by existing suites
+      (`test_authentication.py`, `test_authorization.py`, `test_tenant_isolation.py`,
+      `test_mapping_lifecycle.py`, `test_model_governance.py`/`test_registry.py`,
+      `test_logging_redaction.py`) — see docs/SECURITY_REVIEW.md §5 for the full mapping.
+      `tests/security` (~1 min) is now also gated in CI (`.github/workflows/ci.yml`) and the
+      deploy pipeline's pre-deploy test job (`.github/workflows/deploy.yml`), not just `tests/unit`
+      as before; `pip-audit` is now blocking in both (was advisory) — current dependency baseline
+      is clean.
+- [x] `docs/SECURITY_REVIEW.md`, `docs/DATA_PROTECTION.md`, `docs/INCIDENT_RESPONSE.md`,
+      `docs/CUSTOMER_DATABASE_GUIDE.md` — written; `docs/runbooks/INCIDENT_RUNBOOK.md`'s
+      forward-reference to `docs/INCIDENT_RESPONSE.md` (left as a placeholder in Phase 15) is now
+      a real cross-reference; `docs/THREAT_MODEL.md`'s status line updated from "Draft" to point
+      at the completed review.
+- [x] No critical/high findings left open — confirmed in docs/SECURITY_REVIEW.md §2; full
+      validation sweep clean (`ruff check`, `ruff format --check`, `mypy src/hermes_rpt apps`,
+      `bandit`, `tests/unit` + `tests/security` + `tests/model`, all passing with zero
+      regressions).
 
 ## Phase 17 — End-to-end demonstration
 

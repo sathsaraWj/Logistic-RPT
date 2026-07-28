@@ -10,7 +10,11 @@ This runs when a mapping moves from `draft` to `pending_validation` (Phase 7 lif
 from __future__ import annotations
 
 from hermes_rpt.mappings.document import MappingDocument, ValueSource
-from hermes_rpt.mappings.expressions import referenced_columns
+from hermes_rpt.mappings.expressions import (
+    ExpressionTooDeepError,
+    check_expression_depth,
+    referenced_columns,
+)
 from hermes_rpt.ontology.schema import OntologyEntityDefinition, OntologyFieldDefinition
 from hermes_rpt.ontology.units import convert_to_canonical
 from hermes_rpt.ontology.values import LogicalType
@@ -78,6 +82,17 @@ def validate_mapping_document(
 def _validate_source_columns(
     source: ValueSource, available_columns: set[str] | None, field_name: str, errors: list[str]
 ) -> None:
+    if source.derived is not None:
+        # Checked unconditionally, before `available_columns is None` short-circuits below — a
+        # Phase 16 security review found `referenced_columns`'s recursion (and `evaluate()`'s,
+        # later, at extraction time) has no depth limit, so an over-nested expression is a risk
+        # regardless of whether column-existence checking happens to run for this mapping.
+        try:
+            check_expression_depth(source.derived)
+        except ExpressionTooDeepError as exc:
+            errors.append(f"{field_name}: {exc}")
+            return
+
     if available_columns is None:
         return
     if source.column is not None and source.column not in available_columns:

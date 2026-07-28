@@ -25,6 +25,7 @@ from hermes_rpt.auth.errors import AuthenticationError, AuthorizationError
 from hermes_rpt.common.db import get_sessionmaker
 from hermes_rpt.common.logging import get_logger
 from hermes_rpt.common.repository import TenantMismatchError
+from hermes_rpt.common.tenant_session import bind_tenant_for_row_level_security
 from hermes_rpt.monitoring import metrics
 
 logger = get_logger(__name__)
@@ -38,6 +39,15 @@ async def _record_audit_event_best_effort(request: Request, /, **kwargs: object)
     session_factory = getattr(request.app.state, "db_sessionmaker", None) or get_sessionmaker()
     try:
         async with session_factory() as session:
+            # A Phase 16 review found this session never bound `app.current_tenant_id` at all —
+            # combined with a second bug in the audit_events RLS policy itself (fixed in
+            # migration b48a21a99ef0: `NULL = NULL` is not `TRUE` in SQL, so a platform-level,
+            # tenant_id-IS-NULL event — e.g. every authentication failure — could never be
+            # inserted under FORCE ROW LEVEL SECURITY, silently, since this write is
+            # best-effort). `kwargs.get("tenant_id")` is `None` for the auth-failure case, which
+            # `bind_tenant_for_row_level_security` treats as "leave unbound" — correct now that
+            # the policy actually admits a NULL-tenant row from an unbound session.
+            await bind_tenant_for_row_level_security(session, kwargs.get("tenant_id"))  # type: ignore[arg-type]
             await AuditService(session).record(**kwargs)  # type: ignore[arg-type]
             await session.commit()
     except Exception:  # noqa: BLE001 - audit-write failure must not block the auth response

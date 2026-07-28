@@ -2,10 +2,22 @@
 point-in-time-safe label computation, drives `FeatureExtractionService` per row, then assembles
 quality checks, statistics, a temporal split, and a manifest.
 
-Tenant isolation is structural, not just checked after the fact: every row this produces is
-extracted under one `TenantContext` (`hermes_rpt.tenants.context` — never client-supplied), and
-`hermes_rpt.datasets.quality.check_cross_tenant_contamination` re-verifies the assembled dataset
-never mixes tenants before a manifest is produced.
+Tenant isolation is structural: every row this produces is extracted under one `TenantContext`
+(`hermes_rpt.tenants.context` — never client-supplied), and `DatasetRow` itself carries no
+per-row tenant field to check — there is nothing for a row-level "did any row belong to another
+tenant" check to compare against, since every row in one `build()` call is, by construction, the
+same tenant. (An earlier version of this module called `hermes_rpt.datasets.quality.
+check_cross_tenant_contamination` here anyway, passing a synthesized constant list that could
+never disagree with itself — a Phase 16 security review flagged that as a vacuous check
+overclaiming verification it didn't perform; removed rather than left as false reassurance. The
+function itself is still real, tested, and available in `hermes_rpt.datasets.quality` for a
+future caller that actually has multiple tenants' rows to compare.)
+
+What *is* checked here, because it's the one place a caller-supplied value could disagree with
+the verified tenant: `_validate_definition_matches_tenant` rejects a `DatasetDefinition` whose
+`tenant_id` doesn't match `tenant_context`, or that claims `is_shared_research_dataset=True` —
+building a shared/research dataset isn't supported through this tenant-authenticated path at
+all (see the function's docstring for why).
 """
 
 from __future__ import annotations
@@ -25,7 +37,6 @@ from hermes_rpt.datasets.manifest import DatasetLineage, DatasetManifest, comput
 from hermes_rpt.datasets.quality import (
     DataQualityReport,
     check_class_imbalance,
-    check_cross_tenant_contamination,
     check_duplicate_ids,
     check_future_timestamps,
     check_invalid_date_ordering,
@@ -63,6 +74,30 @@ class BuiltDataset(BaseModel):
     splits: DatasetSplits[DatasetRow]
 
 
+class DatasetTenantMismatchError(Exception):
+    """A `DatasetDefinition` claimed a tenant identity that disagrees with the authenticated
+    `TenantContext` actually building it — either a different `tenant_id`, or
+    `is_shared_research_dataset=True` (shared/research dataset construction isn't supported
+    through this tenant-authenticated path; it would let a tenant launder its own private data
+    into an artifact labelled "shared," which downstream training could then treat as approved
+    cross-tenant training data). Found during a Phase 16 security review:
+    `DatasetDefinition.tenant_id`/`.is_shared_research_dataset` were being copied straight into
+    the manifest with no check against `tenant_context` at all."""
+
+
+def _validate_definition_matches_tenant(
+    definition: DatasetDefinition, *, tenant_context: TenantContext
+) -> None:
+    if definition.is_shared_research_dataset:
+        raise DatasetTenantMismatchError(
+            "Shared research datasets cannot be built through the tenant-authenticated path"
+        )
+    if definition.tenant_id != tenant_context.tenant_id:
+        raise DatasetTenantMismatchError(
+            "DatasetDefinition.tenant_id does not match the authenticated tenant"
+        )
+
+
 class DatasetBuildService:
     def __init__(
         self, session: AsyncSession, *, connection_manager: ConnectionLifecycleManager
@@ -92,6 +127,7 @@ class DatasetBuildService:
         contract: FeatureContract,
         tenant_context: TenantContext,
     ) -> BuiltDataset:
+        _validate_definition_matches_tenant(definition, tenant_context=tenant_context)
         target = await self._resolver.resolve_target(
             contract.target_entity, tenant_context=tenant_context
         )
@@ -192,12 +228,6 @@ class DatasetBuildService:
             )
 
         quality_issues.append(check_class_imbalance([row.label for row in dataset_rows]))
-        quality_issues.append(
-            check_cross_tenant_contamination(
-                [tenant_context.tenant_id] * len(dataset_rows),
-                expected_tenant_id=tenant_context.tenant_id,
-            )
-        )
         quality_report = DataQualityReport(
             row_count=len(dataset_rows),
             issues=tuple(issue for issue in quality_issues if issue is not None),

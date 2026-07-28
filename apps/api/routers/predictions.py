@@ -27,6 +27,7 @@ from hermes_rpt.inference.service import (
     PredictionResponse,
     PredictionTaskNotConfiguredError,
 )
+from hermes_rpt.registry.artifact_integrity import ArtifactIntegrityError
 from hermes_rpt.tenants.context import TenantContext
 
 router = APIRouter(prefix="/v1/predictions", tags=["predictions"])
@@ -107,6 +108,14 @@ async def predict_delivery_delay(
     except UnsupportedModelFamilyError as exc:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Configured model is not servable"
+        ) from exc
+    except ArtifactIntegrityError as exc:
+        # Fixed message, not str(exc) — the exception carries checksum prefixes that, while not
+        # sensitive, are internal detail this endpoint never leaks (same rule as everywhere
+        # else in this router). The mismatch itself is the interesting signal; it's logged with
+        # full detail server-side by the raise site, not dropped.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail="Configured model failed integrity checks"
         ) from exc
     except CircuitOpenError as exc:
         raise HTTPException(

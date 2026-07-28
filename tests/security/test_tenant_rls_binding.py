@@ -26,5 +26,5 @@ async def test_get_tenant_context_binds_the_tenant_for_row_level_security(
 
     assert response.status_code == 200
     spy.assert_awaited_once()
-    (_session, tenant_context), _kwargs = spy.call_args
-    assert tenant_context.tenant_id == auth_fixture.tenant_a.id
+    (_session, tenant_id), _kwargs = spy.call_args
+    assert tenant_id == auth_fixture.tenant_a.id

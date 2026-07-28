@@ -8,12 +8,15 @@ from hermes_rpt.mappings.expressions import (
     Coalesce,
     ColumnRef,
     Concat,
+    Expression,
     ExpressionEvaluationError,
+    ExpressionTooDeepError,
     IfNullThenElse,
     Literal_,
     LowerCase,
     Trim,
     UpperCase,
+    check_expression_depth,
     evaluate,
     referenced_columns,
 )
@@ -91,3 +94,36 @@ def test_expression_tree_rejects_unrecognised_shape_at_validation_time() -> None
     adapter: TypeAdapter[object] = TypeAdapter(Expression)
     with pytest.raises(ValidationError):
         adapter.validate_python({"kind": "exec", "code": "import os"})
+
+
+def _nest(depth: int) -> Expression:
+    expr: Expression = ColumnRef(column="a")
+    for _ in range(depth):
+        expr = UpperCase(value=expr)
+    return expr
+
+
+def test_check_expression_depth_accepts_a_shallow_expression() -> None:
+    check_expression_depth(_nest(5))
+
+
+def test_check_expression_depth_accepts_exactly_the_maximum_depth() -> None:
+    check_expression_depth(_nest(19))
+
+
+def test_check_expression_depth_rejects_an_over_deep_expression() -> None:
+    over_deep = _nest(25)
+    with pytest.raises(ExpressionTooDeepError):
+        check_expression_depth(over_deep)
+
+
+def test_check_expression_depth_recurses_through_concat() -> None:
+    nested_in_concat = Concat(parts=(ColumnRef(column="x"), _nest(25)))
+    with pytest.raises(ExpressionTooDeepError):
+        check_expression_depth(nested_in_concat)
+
+
+def test_check_expression_depth_recurses_through_coalesce() -> None:
+    nested_in_coalesce = Coalesce(options=(ColumnRef(column="x"), _nest(25)))
+    with pytest.raises(ExpressionTooDeepError):
+        check_expression_depth(nested_in_coalesce)

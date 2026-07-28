@@ -23,15 +23,19 @@ from dataclasses import dataclass
 
 import mlflow
 
+from hermes_rpt.common.logging import get_logger
 from hermes_rpt.inference.resilience import (
     CircuitBreaker,
     RetryConfig,
     retry_with_backoff,
     with_timeout,
 )
+from hermes_rpt.registry.artifact_integrity import ArtifactIntegrityError, compute_artifact_checksum
 from hermes_rpt.registry.models import ModelVersion
 
 _HERMES_RPT_NAME_MARKER = "hermes-rpt"
+
+logger = get_logger(__name__)
 
 
 class UnsupportedModelFamilyError(Exception):
@@ -98,6 +102,25 @@ class ModelLoader:
             async def _load() -> LoadedModel:
                 if self._mlflow_tracking_uri:
                     mlflow.set_tracking_uri(self._mlflow_tracking_uri)
+                # Re-verify the artifact's integrity before trusting it — a Phase 16 security
+                # review found nothing ever re-checked `artifact_checksum` after registration,
+                # so a tampered `artifact_uri` (repointed at a different model) or a substituted
+                # artifact under an unchanged URI would have been served undetected.
+                actual_checksum = await asyncio.to_thread(
+                    compute_artifact_checksum, model_version.artifact_uri
+                )
+                if actual_checksum != model_version.artifact_checksum:
+                    logger.error(
+                        "model_artifact_integrity_check_failed",
+                        model_version_id=str(model_version.id),
+                        expected_checksum=model_version.artifact_checksum,
+                        actual_checksum=actual_checksum,
+                    )
+                    raise ArtifactIntegrityError(
+                        model_version.id,
+                        expected=model_version.artifact_checksum,
+                        actual=actual_checksum,
+                    )
                 estimator = await asyncio.to_thread(
                     mlflow.sklearn.load_model, model_version.artifact_uri
                 )

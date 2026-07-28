@@ -1,8 +1,9 @@
 # Hermes-RPT Threat Model
 
-Status: **Draft — initial threat model for the target architecture in
-[ARCHITECTURE.md](ARCHITECTURE.md). Will be revisited and expanded with concrete findings in
-Phase 16 (Security Hardening) once the corresponding subsystems exist.**
+Status: threat model for the architecture in [ARCHITECTURE.md](ARCHITECTURE.md), validated
+against a dedicated repository-wide security review in Phase 16 — see
+[docs/SECURITY_REVIEW.md](SECURITY_REVIEW.md) for concrete findings, fixes, and adversarial test
+coverage against every threat entry below.
 
 ## 1. Primary concern
 

@@ -6,7 +6,7 @@ database engine's driver. `PostgresConnector` is the only functional implementat
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -17,13 +17,22 @@ class ConnectionTarget:
     """Everything needed to open a connection, assembled just-in-time from safe metadata
     (`CustomerDatabaseConnection`) plus a resolved secret (`SecretProvider.resolve`). Never
     logged, never persisted, never returned via any API — held only long enough to build an
-    engine."""
+    engine.
+
+    `password` is `field(repr=False)` — a Phase 16 security review found the "never logged"
+    claim above was only true by convention: nothing stopped `repr(target)`/`f"{target}"` (e.g.
+    an accidental `logger.info("...", target=target)`) from emitting the plaintext password,
+    since dataclass `__repr__` includes every field by default and `hermes_rpt.common.
+    logging`'s redaction only descends into `str`/`dict`/`list` values, never into an arbitrary
+    object's own `repr()`. Excluding the field from `__repr__` closes that specific path
+    structurally rather than relying on every call site remembering not to log this object.
+    """
 
     host: str
     port: int
     database: str
     username: str
-    password: str
+    password: str = field(repr=False)
     tls_mode: str
 
 

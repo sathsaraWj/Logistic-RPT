@@ -92,6 +92,40 @@ class ExpressionEvaluationError(Exception):
     pass
 
 
+class ExpressionTooDeepError(Exception):
+    pass
+
+
+# A Phase 16 security review found `Concat.parts`/`Coalesce.options`/nested `Expression` fields
+# have no depth or size limit — Pydantic would happily construct (and `evaluate()`/
+# `referenced_columns()` would happily recurse through) an arbitrarily deep expression tree
+# submitted in a mapping document, risking a `RecursionError` at validation time. 20 covers any
+# expression a real mapping would ever need by a wide margin.
+_MAX_EXPRESSION_DEPTH = 20
+
+
+def check_expression_depth(expression: Expression, *, _depth: int = 1) -> None:
+    """Call before `evaluate()`/`referenced_columns()` on any expression sourced from a mapping
+    document — those two functions stay simple, unbounded recursion (matching the tree shape
+    exactly) and rely on this separate, explicit check having already run."""
+
+    if _depth > _MAX_EXPRESSION_DEPTH:
+        raise ExpressionTooDeepError(
+            f"Expression nesting exceeds the maximum depth of {_MAX_EXPRESSION_DEPTH}"
+        )
+    if isinstance(expression, Concat):
+        for part in expression.parts:
+            check_expression_depth(part, _depth=_depth + 1)
+    elif isinstance(expression, Coalesce):
+        for option in expression.options:
+            check_expression_depth(option, _depth=_depth + 1)
+    elif isinstance(expression, UpperCase | LowerCase | Trim):
+        check_expression_depth(expression.value, _depth=_depth + 1)
+    elif isinstance(expression, IfNullThenElse):
+        check_expression_depth(expression.value, _depth=_depth + 1)
+        check_expression_depth(expression.if_null, _depth=_depth + 1)
+
+
 def evaluate(expression: Expression, *, row: dict[str, ScalarValue]) -> ScalarValue:
     """`row` is already-extracted, already-typed source column values for one record — this
     function never touches a database or any other I/O; it is pure data transformation."""
