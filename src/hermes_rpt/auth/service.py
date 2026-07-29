@@ -22,6 +22,7 @@ from hermes_rpt.auth.errors import AuthenticationError
 from hermes_rpt.auth.models import ServiceCredential
 from hermes_rpt.auth.repository import ServiceCredentialRepository
 from hermes_rpt.common.settings import Settings
+from hermes_rpt.common.tenant_session import bind_tenant_for_row_level_security
 from hermes_rpt.tenants.context import TenantContext
 
 # A machine credential must never be able to mint or manage other credentials, or perform
@@ -111,6 +112,19 @@ class ServiceCredentialService:
     async def authenticate(self, *, client_id: str, client_secret: str) -> ServiceCredential:
         credential = await self._credentials.find_by_client_id(client_id)
         candidate_hash = _hash_secret(client_secret)
+
+        # This method is called from the unauthenticated exchange endpoint — no TenantContext
+        # has ever been resolved for this session, so (unlike issue_credential/revoke, reached
+        # only through the scope-gated management endpoints where the normal request dependency
+        # chain already bound one) `app.current_tenant_id` is still unset here. Every audit
+        # write below happens under FORCE ROW LEVEL SECURITY, so it must be bound explicitly
+        # first — same pattern apps/api/exception_handlers.py already uses for other
+        # no-prior-tenant-context audit writes (e.g. authentication failures). `None` for an
+        # unknown client_id is correct: bind_tenant_for_row_level_security treats it as "leave
+        # unbound," which is what a platform-level (tenant_id IS NULL) audit row needs.
+        await bind_tenant_for_row_level_security(
+            self._session, credential.tenant_id if credential is not None else None
+        )
 
         if credential is None:
             hmac.compare_digest(candidate_hash, _DUMMY_SECRET_HASH)  # burn comparable time
