@@ -31,13 +31,23 @@ spec:
             httpGet:
               path: /health/live
               port: 8080
-            initialDelaySeconds: 2
-            periodSeconds: 3
-            failureThreshold: 10
+            # Widened from (2s + 3s*10 = 32s): with apps/api/main.py's model-loading warm-up now
+            # backgrounded (not blocking startup), /health/live itself responds immediately once
+            # the process is running — but on a cold node, pulling this image (torch/mlflow/
+            # scikit-learn, several hundred MB of Python deps) and starting the interpreter can
+            # still legitimately exceed 32s. 5s + 5s*30 = 155s gives real headroom for that,
+            # independent of the in-app warm-up fix.
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
           resources:
             limits:
               cpu: "1"
-              memory: 1Gi
+              # 1Gi measured too tight for torch+mlflow+scikit-learn+fastapi+uvicorn loaded in
+              # one process — a silent OOM kill during import produces the same symptom as a
+              # startup-probe timeout (zero app logs, "connection failed"), so bumping this
+              # alongside the probe widening above rather than assuming the probe alone explains it.
+              memory: 2Gi
           env:
             - name: ENVIRONMENT
               value: "local" # see docs/DEPLOYMENT.md "Auth posture" — no real OIDC login flow
