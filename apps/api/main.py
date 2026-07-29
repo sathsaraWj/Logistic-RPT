@@ -40,11 +40,28 @@ def _warm_model_loading_imports() -> None:
     type registry) is not imported until the first `ModelLoader.load()` call — cold, that import
     alone takes tens of seconds on this stack, which blows straight through
     `ModelLoader`'s per-request load timeout if it happens to land on the first prediction
-    request. Paying that cost once here, during startup/readiness, keeps it off every request's
-    timeout budget instead. `torch` is imported alongside it for the same reason, now that
-    `ModelLoader` also serves Hermes-RPT-0.1 (`hermes_rpt.inference.model_loading`)."""
+    request. Paying that cost once here, in the background at startup, keeps it off every
+    request's timeout budget instead. `torch` is imported alongside it for the same reason, now
+    that `ModelLoader` also serves Hermes-RPT-0.1 (`hermes_rpt.inference.model_loading`)."""
     import mlflow.sklearn  # noqa: F401
     import torch  # noqa: F401
+
+
+async def _warm_model_loading_imports_in_background(logger: Any) -> None:
+    # Deliberately NOT awaited before `yield` — this import has measured 20-30s+ cold, which
+    # exceeds Cloud Run's configured startup probe window (docker/cloudrun-service.yaml:
+    # initialDelaySeconds 2 + periodSeconds 3 * failureThreshold 10 = 32s) and blocking on it
+    # here made `/health/live` itself unavailable until the import finished, failing the probe
+    # and the whole deployment outright — the exact liveness-vs-slow-unrelated-import problem
+    # `/health/live`'s own docstring says it's designed to avoid. Run it as a background task
+    # instead: `/health/live` (and everything else) is served immediately: worst case, a
+    # prediction request that lands before this finishes just pays the cold-import cost itself,
+    # same as before this warm-up existed at all — degraded, not broken.
+    try:
+        await asyncio.to_thread(_warm_model_loading_imports)
+        logger.info("model_loading_imports_warmed")
+    except Exception:
+        logger.exception("model_loading_imports_warm_up_failed")
 
 
 @asynccontextmanager
@@ -53,8 +70,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging(settings)
     logger = get_logger(__name__)
     logger.info("startup", environment=settings.environment, service=settings.service_name)
-    await asyncio.to_thread(_warm_model_loading_imports)
+    warm_up_task = asyncio.create_task(_warm_model_loading_imports_in_background(logger))
     yield
+    warm_up_task.cancel()
     logger.info("shutdown")
 
 
