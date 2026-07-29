@@ -21,6 +21,12 @@ class ScopeName(StrEnum):
     MODEL_PROMOTE = "model:promote"
     AUDIT_READ = "audit:read"
     MONITORING_READ = "monitoring:read"
+    # Deliberately not grantable to any credential created through the capability it gates —
+    # see hermes_rpt.auth.service._GRANTABLE_SCOPES. Minting a machine credential that can
+    # obtain SERVICE-typed tokens is a materially higher-blast-radius capability than the
+    # membership/mapping governance TENANT_ADMIN already covers, hence its own scope rather
+    # than folding this into TENANT_ADMIN.
+    SERVICE_CREDENTIAL_MANAGE = "service_credential:manage"
 
 
 class PrincipalType(StrEnum):

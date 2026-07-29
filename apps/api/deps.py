@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from hermes_rpt.auth.service import ServiceCredentialService
 from hermes_rpt.common.db import get_session
 from hermes_rpt.common.settings import get_settings
 from hermes_rpt.connectors.pool_registry import get_pool_registry
@@ -92,3 +93,12 @@ def get_outcome_service(session: DbSessionDep) -> OutcomeService:
 
 
 OutcomeServiceDep = Annotated[OutcomeService, Depends(get_outcome_service)]
+
+
+def get_service_credential_service(session: DbSessionDep) -> ServiceCredentialService:
+    return ServiceCredentialService(session, settings=get_settings())
+
+
+ServiceCredentialServiceDep = Annotated[
+    ServiceCredentialService, Depends(get_service_credential_service)
+]

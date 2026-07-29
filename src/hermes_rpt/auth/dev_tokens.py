@@ -12,14 +12,11 @@ development.
 
 from __future__ import annotations
 
-import time
 import uuid
 from collections.abc import Iterable
 
-import jwt
-
 from hermes_rpt.auth.enums import PrincipalType
-from hermes_rpt.auth.verifier import new_jti
+from hermes_rpt.auth.token_issuance import build_signed_token
 from hermes_rpt.common.settings import Environment, Settings
 
 
@@ -52,26 +49,15 @@ def issue_dev_token(
 
     _require_dev_environment(settings)
 
-    issued_at = now if now is not None else int(time.time())
-    default_ttl = (
-        settings.service_token_ttl_seconds
-        if principal_type == PrincipalType.SERVICE
-        else settings.access_token_ttl_seconds
-    )
-    expires_at = issued_at + (ttl_seconds if ttl_seconds is not None else default_ttl)
-
-    payload = {
-        "sub": str(principal_id),
-        "tenant_id": str(tenant_id),
-        "roles": list(roles),
-        "scopes": list(scopes),
-        "principal_type": principal_type.value,
-        "iss": issuer or settings.jwt_issuer,
-        "aud": audience or settings.jwt_audience,
-        "iat": issued_at,
-        "exp": expires_at,
-        "jti": new_jti(),
-    }
-    return jwt.encode(
-        payload, settings.jwt_secret_key.get_secret_value(), algorithm=settings.jwt_algorithm
+    return build_signed_token(
+        settings=settings,
+        tenant_id=tenant_id,
+        principal_id=principal_id,
+        roles=roles,
+        scopes=scopes,
+        principal_type=principal_type,
+        ttl_seconds=ttl_seconds,
+        issuer=issuer,
+        audience=audience,
+        now=now,
     )

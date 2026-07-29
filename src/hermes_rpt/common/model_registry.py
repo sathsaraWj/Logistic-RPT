@@ -9,6 +9,7 @@ guarantees it rather than relying on import order elsewhere.
 from __future__ import annotations
 
 from hermes_rpt.audit import models as _audit_models
+from hermes_rpt.auth import models as _auth_models
 from hermes_rpt.connectors import models as _connectors_models
 from hermes_rpt.inference import models as _inference_models
 from hermes_rpt.mappings import models as _mappings_models
@@ -18,6 +19,7 @@ from hermes_rpt.tenants import models as _tenants_models
 
 __all__ = [
     "_audit_models",
+    "_auth_models",
     "_connectors_models",
     "_inference_models",
     "_mappings_models",

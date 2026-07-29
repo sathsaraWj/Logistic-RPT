@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from apps.api.exception_handlers import register_exception_handlers
 from apps.api.routers import (
+    auth,
     connections,
     features,
     mappings,
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     app.state.db_sessionmaker = get_sessionmaker()
 
     register_exception_handlers(app)
+    app.include_router(auth.router)
     app.include_router(memberships.router)
     app.include_router(connections.router)
     app.include_router(schema_discovery.router)

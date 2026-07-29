@@ -42,6 +42,12 @@ whatever surface that phase adds.
   endpoints, dependency vulnerabilities).
 * **Compromised background job / worker** — a job that received the wrong or absent tenant
   context and processes/writes data under a wrong identity.
+* **External Partner Integration** — a separate product's backend (e.g. Hermes VMS)
+  authenticating via a tenant-scoped `ServiceCredential` (`docs/AUTHENTICATION.md` §5a), not a
+  human and not an internal Hermes-RPT service. Distinct from "Service Account" above: it
+  crosses an organizational trust boundary, not just a process boundary, and its credential is
+  independently revocable per integration rather than backed by the platform's own signing key
+  the way an internal service token is.
 
 ## 4. Trust boundaries
 
@@ -82,6 +88,15 @@ tenant-bound.
 * **T-S3**: A service token used as if it were a human token (e.g. to bypass per-user scopes).
   *Mitigation*: distinct token types/claims for service-to-service auth; explicit test in
   Phase 3.
+* **T-S4**: A leaked/exfiltrated external-partner `ServiceCredential` secret used to obtain
+  tokens as that tenant. *Mitigation*: revocable at the credential layer independently of the
+  platform's global signing key — `is_active=False` stops all future exchanges immediately;
+  blast radius is bounded to one tenant's one integration and at most one
+  `service_token_ttl_seconds` window for any token already issued before revocation (see
+  `docs/AUTHENTICATION.md` §5a for why a full `jti` denylist wasn't built for this instead).
+  Constant-time secret comparison and a dummy-hash comparison on an unknown `client_id` reduce
+  (do not eliminate) the timing side channel that would otherwise distinguish "wrong secret"
+  from "no such client" — same residual-risk framing as T-I5.
 
 ### Tampering
 
@@ -132,6 +147,13 @@ tenant-bound.
   query-cost guard.
 * **T-D2**: A single tenant's connection pool exhaustion affecting others. *Mitigation*:
   per-tenant pools with bounded size; no shared pool to exhaust.
+* **T-D3**: Brute force / enumeration of the service-credential token-exchange endpoint
+  (`POST /v1/auth/service-token`) — the one endpoint whose body *is* the authentication, so it
+  has no bearer-token check to fail fast on first. *Mitigation*: per-`client_id` and per-source-IP
+  rate limiting (`docs/AUTHENTICATION.md` §5a). Online brute force of the secret itself is
+  infeasible at its entropy regardless; the limiter's actual job is bounding noise/DoS and
+  credential-stuffing against a specific `client_id`. Inherits the existing non-distributed
+  limitation already noted under §6.
 
 ### Elevation of privilege
 
@@ -153,6 +175,15 @@ tenant-bound.
   threat model assumes those will be layered on before any real customer data is connected.
 * Physical/infrastructure-level threats (cloud provider compromise, insider threat with direct
   database access) are out of scope for an application-level threat model.
+* `service_credentials`' RLS policy has a narrow, deliberate carve-out (an unbound session, with
+  no tenant set at all, sees every row) so the token-exchange flow can resolve which tenant a
+  `client_id` belongs to before a `TenantContext` exists. Every other strict tenant-owned table
+  denies an unbound session all rows. This is invisible today (RLS is a structural no-op
+  platform-wide — the connecting role has `BYPASSRLS`, tracked separately in
+  `docs/SECURITY_REVIEW.md`), but remains an intentionally-weaker defense-in-depth layer for this
+  one table even after that finding is fixed — the primary control (application-layer
+  `find_by_client_id`, scoped by `client_id`'s global uniqueness, not by tenant) is what this
+  table actually relies on, exactly as ADR-0003 frames RLS everywhere else.
 
 ## 7. How this document is used
 

@@ -5,7 +5,41 @@ Phase-by-phase history of the Hermes-RPT platform build-out (`0.1.0`, unreleased
 Each phase corresponds to a numbered prompt in `prompts.txt`; see [TASKS.md](TASKS.md) for the
 full, checkable detail behind every line here.
 
-## Phase 19 — Hermes-RPT-0.1 (Tiny, scratch) promoted to production (this change)
+## Phase 20 — External partner service credentials (this change)
+
+- New `ServiceCredential` (`hermes_rpt.auth.models`): a per-integration `client_id`/`client_secret`
+  pair an external partner (e.g. Hermes VMS's backend) exchanges for a short-lived
+  `principal_type=SERVICE` JWT via `POST /v1/auth/service-token` — the first real,
+  production-usable way for a system outside Hermes-RPT to authenticate without a human login.
+  Previously the only token-issuance path (`issue_dev_token`) was hard-gated to `local`/`ci`.
+- Solves the blast-radius problem a naive long-lived-JWT approach would have had: there's no
+  `jti` denylist anywhere in this codebase, so a leaked long-lived token could only be
+  invalidated by rotating the platform's single global signing secret — breaking every other
+  tenant and every internal service at once. Revocation now acts at the credential layer
+  (`DELETE /v1/auth/service-credentials/{id}`) instead: stops all future exchanges immediately,
+  bounded to at most one `service_token_ttl_seconds` window (default 3600s) for any token
+  already issued, with zero impact on anything else.
+- New scope `service_credential:manage`, kept separate from `tenant:admin` — minting a machine
+  credential that can obtain SERVICE-typed tokens is a materially higher-blast-radius capability
+  than membership/mapping governance. A credential's own grantable scopes explicitly exclude
+  `tenant:admin` and `service_credential:manage` itself.
+- First real callers for two previously-idle pieces: `Settings.service_token_ttl_seconds` and
+  `hermes_rpt.auth.rate_limit.InMemoryFixedWindowRateLimiter` (now rate-limiting the
+  token-exchange endpoint per `client_id` and per source IP — the one endpoint in the API whose
+  body *is* the authentication).
+- New migration adds `service_credentials` with RLS enabled, but a deliberate, documented policy
+  carve-out (an unbound session sees every row) — the token-exchange lookup has no
+  `TenantContext` yet, since resolving which tenant a `client_id` belongs to is the point of the
+  call. Recorded as an explicit residual risk in `docs/THREAT_MODEL.md` §6.
+- 20 new adversarial security tests (`tests/security/test_service_credentials.py`) mirroring the
+  existing auth test-suite style: wrong secret/unknown client indistinguishable, revoked
+  credential rejected but already-issued tokens honor their tradeoff, expired credential
+  rejected, cross-tenant isolation, rate-limit trips, an explicit algorithm-confusion regression
+  test (a gap the existing suite didn't cover anywhere), and audit-trail assertions.
+- Docs: `docs/AUTHENTICATION.md` new §5a (explicitly distinguished from §5's *internal*
+  service-to-service auth), `docs/THREAT_MODEL.md` new actor and threats T-S4/T-D3.
+
+## Phase 19 — Hermes-RPT-0.1 (Tiny, scratch) promoted to production
 
 - Strengthened the synthetic label generator (`hermes_rpt.synthetic.generator._resolve_trip_outcome`)
   to be risk-weighted by trip distance, vehicle age, recent breakdown history, and route/driver
