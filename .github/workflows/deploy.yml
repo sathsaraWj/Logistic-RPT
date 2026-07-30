@@ -101,20 +101,17 @@ jobs:
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-
-      - name: Build image
+      - name: Build and push image via Cloud Build
+        # Built on Cloud Build, not the runner's local Docker daemon: this image's ml dependency
+        # group (torch + CUDA wheels) needs more disk than GitHub's standard runners have free
+        # (~14GB), which was silently failing this step on every deploy. Cloud Build's default
+        # machine has generous disk headroom (bumped further in docker/cloudbuild.yaml).
         run: |
-          docker build -f docker/api.Dockerfile \
-            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/api:${{ github.sha }} \
-            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/api:latest \
+          gcloud builds submit \
+            --config=docker/cloudbuild.yaml \
+            --substitutions=_IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/api,_TAG=${{ github.sha }} \
+            --project=${{ env.PROJECT_ID }} \
             .
-
-      - name: Push image
-        run: |
-          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/api:${{ github.sha }}
-          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/api:latest
 
       - name: Render Cloud Run service manifest
         run: |

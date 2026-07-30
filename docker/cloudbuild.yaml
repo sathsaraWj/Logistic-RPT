@@ -1,0 +1,26 @@
+# Builds apps/api's image via Cloud Build instead of inside the GitHub Actions runner.
+#
+# GitHub's standard hosted runners have ~14GB free disk — this image's ml dependency group
+# (torch + CUDA wheels) needs far more than that held simultaneously across both Dockerfile
+# build stages, which was silently failing every deploy. Cloud Build's default machine has
+# generous disk headroom (bumped further here via diskSizeGb) and needs no local Docker daemon
+# on the runner at all.
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-f"
+      - "docker/api.Dockerfile"
+      - "-t"
+      - "${_IMAGE}:${_TAG}"
+      - "-t"
+      - "${_IMAGE}:latest"
+      - "."
+images:
+  - "${_IMAGE}:${_TAG}"
+  - "${_IMAGE}:latest"
+timeout: 3600s
+options:
+  machineType: "E2_HIGHCPU_8"
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
