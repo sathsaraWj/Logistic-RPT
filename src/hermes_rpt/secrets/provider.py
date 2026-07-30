@@ -107,8 +107,16 @@ class GoogleSecretManagerSecretProvider:
 
 @lru_cache
 def get_secret_provider() -> SecretProvider:
-    """Process-wide singleton — local development only. Environment-specific wiring (e.g.
-    choosing `AzureKeyVaultSecretProvider` in a real deployment) is a future configuration
-    concern, not something this function decides on its own yet."""
+    """Process-wide singleton, chosen via `settings.secret_provider_backend` — "local" (the
+    default, safe for local dev/CI/tests) or "google_secret_manager" (real persistent storage,
+    required for any environment where a customer database connection needs to survive a
+    container restart)."""
 
+    from hermes_rpt.common.settings import get_settings
+
+    settings = get_settings()
+    if settings.secret_provider_backend == "google_secret_manager":  # noqa: S105 # nosec B105
+        from hermes_rpt.secrets.google_provider import GoogleSecretManagerSecretProvider
+
+        return GoogleSecretManagerSecretProvider(project_id=settings.gcp_project_id)
     return LocalDevSecretProvider()

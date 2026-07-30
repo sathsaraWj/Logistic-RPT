@@ -33,3 +33,18 @@ def test_algorithm_none_is_rejected() -> None:
 def test_an_unrecognised_jwt_algorithm_is_rejected() -> None:
     with pytest.raises(ValidationError):
         Settings(jwt_algorithm="not-a-real-algorithm")
+
+
+def test_an_unrecognised_secret_provider_backend_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(secret_provider_backend="not-a-real-backend")
+
+
+def test_google_secret_manager_backend_requires_a_project_id() -> None:
+    with pytest.raises(ValidationError):
+        Settings(secret_provider_backend="google_secret_manager", gcp_project_id="")
+
+
+def test_google_secret_manager_backend_with_project_id_is_valid() -> None:
+    settings = Settings(secret_provider_backend="google_secret_manager", gcp_project_id="p")
+    assert settings.secret_provider_backend == "google_secret_manager"

@@ -58,6 +58,13 @@ class Settings(BaseSettings):
 
     mlflow_tracking_uri: str = "http://localhost:5000"
 
+    # Independent from `environment` on purpose — some deployments run with
+    # ENVIRONMENT=local for reasons unrelated to secret storage (e.g. to enable
+    # `issue_dev_token`), and coupling this choice to that flag would make one setting silently
+    # control the other. See hermes_rpt.secrets.provider.get_secret_provider.
+    secret_provider_backend: str = "local"  # noqa: S105 # nosec B105 - backend name, not a password
+    gcp_project_id: str = ""
+
     cors_allowed_origins: list[str] = Field(default_factory=list)
 
     request_id_header: str = "X-Request-ID"
@@ -96,6 +103,16 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("secret_provider_backend")
+    @classmethod
+    def _validate_secret_provider_backend(cls, value: str) -> str:
+        allowed = {"local", "google_secret_manager"}
+        if value not in allowed:
+            raise ValueError(
+                f"secret_provider_backend must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
+
     @field_validator("jwt_algorithm")
     @classmethod
     def _validate_jwt_algorithm(cls, value: str) -> str:
@@ -120,6 +137,17 @@ class Settings(BaseSettings):
             raise ValueError(
                 "JWT_SECRET_KEY must be set explicitly outside local/CI environments — "
                 "refusing to start with the insecure development default (fail closed)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_gcp_project_id_for_google_secret_manager(self) -> Settings:
+        if (
+            self.secret_provider_backend == "google_secret_manager"  # noqa: S105 # nosec B105
+            and not self.gcp_project_id
+        ):
+            raise ValueError(
+                "GCP_PROJECT_ID is required when SECRET_PROVIDER_BACKEND=google_secret_manager"
             )
         return self
 
