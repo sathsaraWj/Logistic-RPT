@@ -23,7 +23,10 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --group dev
+        # --group ml is required too: apps.api.main imports hermes_rpt.inference.model_loading
+        # unconditionally, which imports mlflow/torch at module level, so even collecting
+        # tests/unit/test_health.py (which imports create_app) fails without it.
+        run: uv sync --group dev --group ml
 
       - name: Ruff lint
         run: uv run ruff check .

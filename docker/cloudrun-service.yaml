@@ -71,6 +71,20 @@ spec:
                 secretKeyRef:
                   name: hermes-rpt-jwt-secret
                   key: latest
+            - name: MLFLOW_TRACKING_URI
+              valueFrom:
+                secretKeyRef:
+                  # A plain postgresql:// URI, not an HTTP tracking server — MLflow talks to
+                  # this Postgres database directly via SQLAlchemy, so there's no separate
+                  # server to keep authenticated/reachable across deploys.
+                  name: hermes-rpt-mlflow-db-url
+                  key: latest
+            - name: GCP_PROJECT_ID
+              value: "hermes-rpt-demo"
+            - name: SECRET_PROVIDER_BACKEND
+              value: "google_secret_manager" # see hermes_rpt.secrets.provider — without this,
+              # customer DB connection credentials only live in one container's memory and are
+              # lost on every restart.
         - name: cloud-sql-proxy
           image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.0
           args:
